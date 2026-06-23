@@ -545,4 +545,158 @@ def handle_text(message):
                 f"<b>📧 BREACH RESULT</b>\n\n"
                 f"Email: <code>{text}</code>\n"
                 f"⚠️ <b>Found in {result['count']} breach(es)!</b>\n\n"
-                f"Sites: {names}{'...' if
+                f"Sites: {names}{'...' if result['count'] > 5 else ''}",
+                message.chat.id, msg.message_id
+            )
+        else:
+            bot.edit_message_text(
+                f"<b>📧 BREACH RESULT</b>\n\n"
+                f"Email: <code>{text}</code>\n"
+                f"✅ <b>No breaches found!</b>",
+                message.chat.id, msg.message_id
+            )
+
+    else:
+        log_action(uid, "MSG", text[:100])
+        bot.reply_to(message, "💡 /start দিয়ে menu দেখো।",
+                     reply_markup=main_menu(uid))
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# FILE HANDLER — hash file
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+@bot.message_handler(content_types=['document'])
+def handle_file(message):
+    uid = message.from_user.id
+    if is_banned(uid): return
+    register_user(message)
+    log_action(uid, "FILE_UPLOAD", message.document.file_name)
+
+    state = user_states.get(uid)
+    if state == "hash":
+        user_states.pop(uid)
+        msg = bot.reply_to(message, "🔐 Hashing file...")
+        try:
+            fi = bot.get_file(message.document.file_id)
+            raw = bot.download_file(fi.file_path)
+            hashes = hash_file(raw)
+            txt = f"<b>🔐 FILE HASH</b>\n\n"
+            txt += f"File: <code>{message.document.file_name}</code>\n"
+            txt += f"Size: {round(len(raw)/1024, 1)} KB\n\n"
+            for algo, val in hashes.items():
+                txt += f"<b>{algo}:</b>\n<code>{val}</code>\n\n"
+            bot.edit_message_text(txt, message.chat.id, msg.message_id)
+        except Exception as e:
+            bot.edit_message_text(f"❌ Error: {e}", message.chat.id, msg.message_id)
+    else:
+        bot.reply_to(message, "📁 File পেলাম। Hash করতে চাইলে আগে 🔐 Hash বাটন চাপো।")
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# ADMIN COMMANDS
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+@bot.message_handler(commands=['admin'])
+def cmd_admin(message):
+    if message.from_user.id != OWNER_ID:
+        return
+    show_admin_panel(message.from_user.id)
+
+@bot.message_handler(commands=['user'])
+def cmd_user_detail(message):
+    if message.from_user.id != OWNER_ID: return
+    parts = message.text.split()
+    if len(parts) < 2:
+        bot.reply_to(message, "Usage: /user [user_id]")
+        return
+    target = int(parts[1])
+    cur.execute("SELECT uid, name, username, total_actions, first_seen, last_seen FROM users WHERE uid=?", (target,))
+    u = cur.fetchone()
+    if not u:
+        bot.reply_to(message, "User not found!")
+        return
+    cur.execute("SELECT action, detail, timestamp FROM activity_log WHERE uid=? ORDER BY id DESC LIMIT 30", (target,))
+    logs = cur.fetchall()
+    txt = (
+        f"<b>👤 USER: {u[1]}</b>\n"
+        f"ID: <code>{u[0]}</code>\n"
+        f"Username: @{u[2]}\n"
+        f"Actions: <b>{u[3]}</b>\n"
+        f"First: {u[4][:16]}\n"
+        f"Last: {u[5][:16]}\n\n"
+        f"<b>📋 Full Log:</b>\n"
+    )
+    for action, detail, ts in logs:
+        txt += f"[{ts[11:16]}] <b>{action}</b>"
+        if detail: txt += f" — {detail[:80]}"
+        txt += "\n"
+    mk = types.InlineKeyboardMarkup()
+    mk.add(types.InlineKeyboardButton("⛔ Ban", callback_data=f"ban_{target}"))
+    bot.reply_to(message, txt, reply_markup=mk)
+
+@bot.message_handler(commands=['ban'])
+def cmd_ban(message):
+    if message.from_user.id != OWNER_ID: return
+    parts = message.text.split()
+    if len(parts) < 2: return
+    target = int(parts[1])
+    with db_lock:
+        cur.execute("INSERT OR REPLACE INTO banned VALUES (?,?)", (target, "Manual ban"))
+        db.commit()
+    bot.reply_to(message, f"⛔ Banned <code>{target}</code>!")
+
+@bot.message_handler(commands=['unban'])
+def cmd_unban(message):
+    if message.from_user.id != OWNER_ID: return
+    parts = message.text.split()
+    if len(parts) < 2: return
+    with db_lock:
+        cur.execute("DELETE FROM banned WHERE uid=?", (int(parts[1]),))
+        db.commit()
+    bot.reply_to(message, f"✅ Unbanned!")
+
+@bot.message_handler(commands=['broadcast'])
+def cmd_broadcast(message):
+    if message.from_user.id != OWNER_ID: return
+    parts = message.text.split(None, 1)
+    if len(parts) < 2: return
+    cur.execute("SELECT uid FROM users")
+    users = cur.fetchall()
+    sent = failed = 0
+    for (uid,) in users:
+        try:
+            bot.send_message(uid, f"📢 <b>Broadcast:</b>\n\n{parts[1]}")
+            sent += 1
+            time.sleep(0.05)
+        except: failed += 1
+    bot.reply_to(message, f"✅ Sent: {sent} | ❌ Failed: {failed}")
+
+@bot.message_handler(commands=['save'])
+def cmd_save(message):
+    if message.from_user.id != OWNER_ID: return
+    save_to_github()
+    bot.reply_to(message, "✅ Saved to GitHub!")
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# KEEP ALIVE
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+class PingServer(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        cur.execute("SELECT COUNT(*) FROM users")
+        u = cur.fetchone()[0]
+        self.wfile.write(f"BDCyber Bot | Uptime: {get_uptime()} | Users: {u}".encode())
+    def log_message(self, *args): pass
+
+def keep_alive():
+    HTTPServer(('0.0.0.0', int(os.environ.get("PORT", 8080))), PingServer).serve_forever()
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# LAUNCH
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+if __name__ == "__main__":
+    print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    print("  BDCyber Intelligence Bot v1.0")
+    print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    threading.Thread(target=keep_alive, daemon=True).start()
+    threading.Thread(target=auto_save_loop, daemon=True).start()
+    print("[Bot] Started!")
+    bot.infinity_polling(timeout=60, long_polling_timeout=30)
