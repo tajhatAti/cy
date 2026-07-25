@@ -130,17 +130,39 @@ def toggle_snippet_share(payload: SnippetShare, authorization: Optional[str] = H
 
 @router.get("/s/{token}")
 def view_shared_snippet(token: str):
-    """Public PUBLISHED page — NO auth, NO editor UI.
+    """Public PUBLISHED page via share token."""
+    return _serve_shared(token)
 
-    This is the finished, standalone output (GitHub-Pages style), not a tool:
-      * HTML snippets -> served verbatim as the user's own HTML document
-        (a true standalone static page, exactly like deploying index.html).
-      * Other languages -> a single clean viewer that just renders/runs the
-        content. No Copy/Download/source/console/tabs — only the output.
-    """
+
+@router.get("/@{username}/{filename}")
+def view_shared_by_user_file(username: str, filename: str):
+    """Pretty public URL: /@username/filename → resolves to published snippet."""
+    conn = get_db_connection()
+    try:
+        # Find user by username
+        u = conn.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()
+        if not u:
+            raise HTTPException(status_code=404, detail="User not found.")
+        # Find snippet owned by that user whose title (strips extension) matches filename
+        # Normalize: strip any extension from both
+        import os
+        base = os.path.splitext(filename)[0]
+        rows = conn.execute(
+            "SELECT share_token FROM snippets WHERE user_id = ? AND is_public = 1 "
+            "AND (title = ? OR title LIKE ?)",
+            (u["id"], filename, base + "%")
+        ).fetchall()
+        if not rows:
+            raise HTTPException(status_code=404, detail="Published page not found.")
+        token = rows[0]["share_token"]
+    finally:
+        conn.close()
+    return _serve_shared(token)
+
+
+def _serve_shared(token: str):
     from snippet_page import build_published_page
     from fastapi.responses import HTMLResponse
-
     conn = get_db_connection()
     try:
         row = conn.execute(
@@ -153,9 +175,7 @@ def view_shared_snippet(token: str):
         conn.commit()
     finally:
         conn.close()
-
     html, is_raw = build_published_page(row)
-    # For HTML we serve the user's document as-is (true standalone page).
     return HTMLResponse(content=html)
 
 

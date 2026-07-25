@@ -1,15 +1,15 @@
 /* ============================================================
-   AHAD CO — v3 (Stripe + Linear inspired)
-   Near-black canvas · restrained indigo→violet · mono eyebrows
+   CODENEST — v4 (Linear + Stripe inspired)
+   Deep near-black canvas · warm amber→orange gradient · mono eyebrows
    ============================================================ */
 
 *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
 
 :root {
-  --brand-1: #6366f1;   /* indigo */
-  --brand-2: #a855f7;   /* violet */
-  --brand-3: #22d3ee;   /* teal accent */
-  --grad: linear-gradient(120deg, var(--brand-1), var(--brand-2));
+  --brand-1: #f59e0b;   /* warm amber */
+  --brand-2: #ef6c00;   /* deep orange */
+  --brand-3: #fcd34d;   /* honey accent */
+  --grad: linear-gradient(135deg, var(--brand-1), var(--brand-2));
 
   --bg: #08090d;
   --bg-2: #0b0d14;
@@ -30,7 +30,7 @@
   --radius: 14px;
   --radius-sm: 10px;
   --shadow: 0 20px 50px rgba(0, 0, 0, 0.5);
-  --ring: 0 0 0 3px rgba(99, 102, 241, 0.3);
+  --ring: 0 0 0 3px rgba(245,158,11, 0.3);
 
   --font: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
   --mono: 'JetBrains Mono', ui-monospace, monospace;
@@ -47,7 +47,7 @@ body {
   overflow-x: hidden;
   -webkit-font-smoothing: antialiased;
   background-image:
-    radial-gradient(820px 560px at 8% -6%, rgba(99, 102, 241, 0.16), transparent 60%),
+    radial-gradient(820px 560px at 8% -6%, rgba(245,158,11, 0.16), transparent 60%),
     radial-gradient(760px 480px at 96% 0%, rgba(168, 85, 247, 0.12), transparent 55%);
   background-attachment: fixed;
 }
@@ -90,7 +90,7 @@ body {
   gap: 8px;
 }
 .btn-primary { background: var(--grad); }
-.btn-primary:hover { transform: translateY(-1px); box-shadow: 0 8px 22px rgba(99, 102, 241, .35); }
+.btn-primary:hover { transform: translateY(-1px); box-shadow: 0 8px 22px rgba(245,158,11, .35); }
 .btn-secondary { background: var(--surface-2); border: 1px solid var(--border-strong); }
 .btn-secondary:hover { background: rgba(255,255,255,.10); }
 .btn-ghost { background: transparent; border: 1px solid var(--border-strong); color: var(--text); }
@@ -118,11 +118,19 @@ body {
 .brand { display: inline-flex; align-items: center; gap: 10px; cursor: pointer; }
 .brand-mark {
   width: 32px; height: 32px; border-radius: 9px; background: var(--grad);
-  display: grid; place-items: center; font-weight: 800; font-size: 13px; color: #fff;
-  box-shadow: 0 5px 16px rgba(99, 102, 241, .35);
+  display: grid; place-items: center; font-weight: 800; color: #fff;
+  box-shadow: 0 5px 16px rgba(245, 158, 11, .32);
+  overflow: hidden; flex-shrink: 0;
 }
-.brand-mark.sm { width: 26px; height: 26px; font-size: 11px; }
-.brand-mark.lg { width: 46px; height: 46px; font-size: 17px; border-radius: 13px; }
+.brand-mark svg { width: 62%; height: 62%; display: block; }
+.brand-mark object { width: 100%; height: 100%; display: block; pointer-events: none; }
+.brand-mark svg path { fill: #fff; }
+.brand-mark.sm { width: 26px; height: 26px; border-radius: 8px; }
+.brand-mark.sm svg { width: 64%; height: 64%; }
+.brand-mark.sm object { width: 100%; height: 100%; }
+.brand-mark.lg { width: 46px; height: 46px; font-size: 17px; border-radius: 13px; box-shadow: 0 8px 24px rgba(245,158,11,.38); }
+.brand-mark.lg svg { width: 58%; height: 58%; }
+.brand-mark.lg object { width: 100%; height: 100%; }
 .brand-text { font-weight: 800; font-size: 17px; letter-spacing: -.2px; }
 
 /* ============================================================
@@ -137,10 +145,13 @@ html:not(.booting) .boot-splash { display: none !important; }
 html.booting .nav, html.booting .hero, html.booting .section, html.booting .foot,
 html.booting .auth, html.booting .dashboard { display: none !important; }
 .boot-logo {
-  width: 60px; height: 60px; border-radius: 17px; background: var(--grad);
+  width: 64px; height: 64px; border-radius: 17px; background: var(--grad);
   display: grid; place-items: center; font-weight: 800; color: #fff; font-size: 20px;
-  box-shadow: 0 12px 36px rgba(99, 102, 241, .45);
+  box-shadow: 0 12px 36px rgba(245,158,11,.42);
 }
+.boot-logo svg { width: 56%; height: 56%; }
+.boot-logo object { width: 100%; height: 100%; display: block; pointer-events: none; }
+.boot-logo svg path { fill: #fff; }
 .boot-spinner {
   width: 30px; height: 30px; border: 3px solid var(--border-strong);
   border-top-color: var(--brand-1); border-radius: 50%; animation: spin .8s linear infinite;
@@ -187,21 +198,6 @@ html.booting .auth, html.booting .dashboard { display: none !important; }
 .trust-item { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted-2); }
 
 .hero-art { display: flex; justify-content: center; }
-.glass-card {
-  width: 310px; padding: 24px; border-radius: 20px;
-  background: linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.02));
-  border: 1px solid var(--border); box-shadow: var(--shadow);
-}
-.gc-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
-.gc-chip { font-family: var(--mono); font-size: 10px; letter-spacing: 1.4px; color: var(--brand-3); font-weight: 600; padding: 4px 9px; border: 1px solid rgba(34,211,238,.3); border-radius: 30px; }
-.gc-lock { font-size: 17px; }
-.gc-row { display: flex; justify-content: space-between; padding: 12px 0; border-top: 1px solid var(--border); font-size: 14px; }
-.gc-k { color: var(--muted); }
-.gc-v { font-weight: 700; }
-.gc-v.active { color: var(--brand-3); }
-.gc-bar { height: 5px; border-radius: 5px; background: var(--surface-2); margin: 16px 0 10px; overflow: hidden; }
-.gc-bar i { display: block; height: 100%; width: 78%; background: var(--grad); border-radius: 5px; }
-.gc-foot { font-size: 12px; color: var(--muted-2); }
 
 /* ============================================================
    SECTIONS
@@ -817,7 +813,7 @@ html[data-theme="light"] {
 }
 html[data-theme="light"] body {
   background-image:
-    radial-gradient(900px 600px at 8% -6%, rgba(99, 102, 241, 0.10), transparent 60%),
+    radial-gradient(900px 600px at 8% -6%, rgba(245,158,11, 0.10), transparent 60%),
     radial-gradient(820px 500px at 96% 0%, rgba(168, 85, 247, 0.08), transparent 55%);
 }
 html[data-theme="light"] .nav { background: rgba(255,255,255,0.75); }

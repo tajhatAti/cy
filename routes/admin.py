@@ -228,7 +228,7 @@ def admin_abuse_route(authorization: Optional[str] = Header(None)):
 @router.get("/report-abuse", include_in_schema=False)
 def report_abuse_page():
     html = """<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Report abuse · Ahad Co</title>
+<title>Report abuse · CodeNest</title>
 <style>
 body{margin:0;font-family:Inter,system-ui,sans-serif;background:#0B0C14;color:#F5F5FA;display:grid;place-items:center;min-height:100vh;padding:20px;box-sizing:border-box}
 .card{max-width:460px;width:100%;background:#14152a;border:1px solid #262852;border-radius:18px;padding:28px}

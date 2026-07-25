@@ -1,4 +1,4 @@
-"""Ahad Co — RunSpace: free code/bot hosting.
+"""CodeNest — RunSpace: free code/bot hosting.
 
 Thin ASGI shell: app init, middleware, static mount, the SPA host (landing +
 deep-link negotiation for client-routed sections), /terms, /health, and the
@@ -16,14 +16,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from database import DIALECT, init_db  # noqa: F401  (init_db already ran via routes.deps)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
-logger = logging.getLogger("ahad-co-app")
+logger = logging.getLogger("codenest-app")
 
 BASE_DIR = Path(__file__).resolve().parent
 INDEX_FILE = BASE_DIR / "index.html"
 TERMS_FILE = BASE_DIR / "terms.html"
 STATIC_DIR = BASE_DIR / "static"
 
-app = FastAPI(title="Ahad Co — RunSpace")
+app = FastAPI(title="CodeNest — RunSpace")
 
 
 import asyncio
@@ -32,9 +32,11 @@ import httpx
 
 async def _self_ping_loop():
     """Background scheduled task: sends a lightweight HTTP GET to the app's own
-    /health endpoint every 10-14 minutes to prevent Render free tier web service
-    from spinning down after 15 minutes of inactivity."""
-    await asyncio.sleep(60)
+    /health endpoint every ~7 minutes to prevent Render free tier web service
+    from spinning down after 15 minutes of inactivity. Hitting the external
+    Render URL counts as real inbound traffic and keeps the service awake."""
+    await asyncio.sleep(15)
+    failures = 0
     while True:
         try:
             port = os.getenv("PORT", "8000")
@@ -47,16 +49,26 @@ async def _self_ping_loop():
             url = f"{base}/health"
             async with httpx.AsyncClient(timeout=10.0) as client:
                 resp = await client.get(url)
-                logger.info("Self-ping to %s returned status %s", url, resp.status_code)
+            if failures:
+                logger.info("Self-ping recovered after %d failures", failures)
+                failures = 0
+            logger.debug("Self-ping to %s ok (%s)", url, resp.status_code)
         except Exception as exc:
-            logger.warning("Self-ping failed: %s", exc)
-        
-        delay = random.uniform(600, 840)
+            failures += 1
+            logger.warning("Self-ping failed (%d in a row): %s", failures, exc)
+        # 7–8 min stays safely under Render's 15-minute idle threshold.
+        delay = random.uniform(420, 480)
         await asyncio.sleep(delay)
 
 @app.on_event("startup")
 async def startup_event():
     asyncio.create_task(_self_ping_loop())
+    # Telegram server-alive bot — starts automatically if TELEGRAM_PING_BOT_TOKEN is set
+    try:
+        from services.pingbot import start_bot as _start_pingbot
+        _start_pingbot()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Ping bot failed to start: %s", e)
 
 
 def _enable_embedded_runner() -> bool:
@@ -158,6 +170,14 @@ CLIENT_ONLY_PATHS = [
 for _p in CLIENT_ONLY_PATHS:
     app.get("/" + _p, include_in_schema=False)(read_index)
 
+# /runspace/{username}/{job-slug} → SPA shell; frontend routes to jobs tab and
+# selects the matching job (deep-linking per job).
+@app.get("/runspace/{username}/{slug:path}", include_in_schema=False)
+def read_runspace_deep(username: str, slug: str):
+    if not INDEX_FILE.exists():
+        raise HTTPException(status_code=404, detail="index.html not found.")
+    return FileResponse(INDEX_FILE)
+
 # Back-compat heal: a frontend bug once produced published-page links like
 # /code/s/<token> (the tab path was glued onto the origin). Redirect any
 # shared copies to the real public page instead of a cold JSON 404.
@@ -173,6 +193,7 @@ def health():
         "status": "ok",
         "database": DIALECT,
         "runner": "embedded" if EMBEDDED_RUNNER else "remote",
+        "ping_bot": "running" if bool(os.getenv("TELEGRAM_PING_BOT_TOKEN", "").strip()) else "not configured",
         "brevo_api_key_set": bool(os.getenv("BREVO_API_KEY", "").strip()),
         "sender_email_set": bool(os.getenv("SENDER_EMAIL", "").strip()),
     }
@@ -199,9 +220,12 @@ from routes.dashboard import router as dashboard_router
 from routes.code_editor import router as code_editor_router
 from routes.runspace import router as runspace_router
 from routes.admin import router as admin_router
+from routes.ping import router as ping_router
+from services.term_proxy import router as term_router
 
 for _r in (auth_router, profile_router, dashboard_router,
-           code_editor_router, runspace_router, admin_router):
+           code_editor_router, runspace_router, admin_router,
+           ping_router, term_router):
     app.include_router(_r)
 
 

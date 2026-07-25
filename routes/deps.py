@@ -26,7 +26,7 @@ from database import (
     IntegrityError as DBIntegrityError,
 )
 
-logger = logging.getLogger("ahad-co-app")
+logger = logging.getLogger("codenest-app")
 
 OTP_EXPIRY_MINUTES = int(os.getenv("OTP_EXPIRY_MINUTES", "10"))
 MAX_OTP_ATTEMPTS = int(os.getenv("MAX_OTP_ATTEMPTS", "5"))  # wrong codes before the code dies
@@ -234,19 +234,80 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
         return False
 
 
+SESSION_TTL_DAYS = 30
+
+
+def _ensure_expires_column(conn):
+    """Idempotently ensure the `sessions.expires_at` column exists.
+
+    psycopg2 aborts the whole transaction if any statement raises an error,
+    so we never rely on a try/except around ALTER — we probe first using
+    information_schema / PRAGMA and run ALTER only when the column is missing.
+    """
+    try:
+        from database import DIALECT
+        cur = conn.cursor()
+        exists = False
+        if DIALECT == "postgres":
+            cur.execute(
+                "SELECT 1 FROM information_schema.columns "
+                "WHERE table_name='sessions' AND column_name='expires_at'"
+            )
+            exists = cur.fetchone() is not None
+        else:
+            cur.execute("PRAGMA table_info(sessions)")
+            rows = cur.fetchall() or []
+            # PRAGMA returns (cid, name, type, notnull, dflt_value, pk)
+            exists = any((r[1] if len(r) > 1 else None) == "expires_at" for r in rows)
+        if not exists:
+            conn.execute("ALTER TABLE sessions ADD COLUMN expires_at TEXT")
+            conn.commit()
+        cur.close()
+    except Exception as exc:
+        logger.warning("_ensure_expires_column: %s", exc)
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+
+
 def create_session(user_id: int, request: Request) -> str:
+    from datetime import datetime, timedelta, timezone
     token = generate_token()
     device_info = parse_device(request.headers.get("user-agent", ""))
     ip = client_ip(request)
-    current_time = now_utc_str()
+    now = datetime.now(timezone.utc)
+    created_at = now.strftime("%Y-%m-%d %H:%M:%S")
+    expires_at = (now + timedelta(days=SESSION_TTL_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
 
     conn = get_db_connection()
     try:
-        conn.execute("""
-            INSERT INTO sessions (user_id, token, device_info, ip_address, created_at, last_seen)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (user_id, token, device_info, ip, current_time, current_time))
+        _ensure_expires_column(conn)
+        # Cap concurrent sessions per user at 10 to keep the table tidy.
+        try:
+            conn.execute("""
+                DELETE FROM sessions WHERE id IN (
+                    SELECT id FROM sessions WHERE user_id = ?
+                    AND id NOT IN (
+                        SELECT id FROM sessions WHERE user_id = ?
+                        ORDER BY id DESC LIMIT 9
+                    )
+                )
+            """, (user_id, user_id))
+        except Exception:
+            # Older SQLite (<3.35) doesn't support LIMIT in sub-DELETE; skip cap.
+            try: conn.rollback()
+            except Exception: pass
+        conn.execute(
+            "INSERT INTO sessions (user_id, token, device_info, ip_address, created_at, last_seen, expires_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (user_id, token, device_info, ip, created_at, created_at, expires_at),
+        )
         conn.commit()
+    except Exception:
+        try: conn.rollback()
+        except Exception: pass
+        raise
     finally:
         conn.close()
 
@@ -284,15 +345,41 @@ def get_current_user_and_session(authorization: Optional[str] = Header(None)):
     token = authorization.split(" ", 1)[1].strip()
     conn = get_db_connection()
     try:
+        # Lazy migration: add expires_at column if missing (no try/except poison)
+        _ensure_expires_column(conn)
         session_row = conn.execute("SELECT * FROM sessions WHERE token = ?", (token,)).fetchone()
         if not session_row:
             raise HTTPException(status_code=401, detail="Session expired. Please sign in again.")
+        # Expiry check (honours expires_at if set; otherwise fall back to a
+        # generous 30-day-from-creation window so legacy sessions still work).
+        try:
+            from datetime import datetime, timezone, timedelta
+            exp = session_row["expires_at"] if "expires_at" in session_row.keys() else None
+            if exp:
+                exp_dt = datetime.strptime(exp, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+                if datetime.now(timezone.utc) > exp_dt:
+                    conn.execute("DELETE FROM sessions WHERE id = ?", (session_row["id"],))
+                    conn.commit()
+                    raise HTTPException(status_code=401, detail="Session expired. Please sign in again.")
+            else:
+                # Legacy session without expires_at: enforce 30 days from created_at
+                try:
+                    created = datetime.strptime(session_row["created_at"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+                    if datetime.now(timezone.utc) > created + timedelta(days=SESSION_TTL_DAYS):
+                        conn.execute("DELETE FROM sessions WHERE id = ?", (session_row["id"],))
+                        conn.commit()
+                        raise HTTPException(status_code=401, detail="Session expired. Please sign in again.")
+                except Exception:
+                    pass
+        except HTTPException:
+            raise
+        except Exception:
+            pass
 
         user_row = conn.execute("SELECT * FROM users WHERE id = ?", (session_row["user_id"],)).fetchone()
         if not user_row:
             raise HTTPException(status_code=401, detail="Account not found.")
         if "is_suspended" in user_row.keys() and user_row["is_suspended"]:
-            # Suspended accounts are locked out of EVERY authed route (jobs included).
             raise HTTPException(status_code=401, detail="This account is suspended.")
 
         conn.execute("UPDATE sessions SET last_seen = ? WHERE id = ?", (now_utc_str(), session_row["id"]))

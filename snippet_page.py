@@ -107,7 +107,7 @@ _VIEWER = """<!DOCTYPE html>
 <body>
 <script type="application/json" id="data">__DATA__</script>
 <div class="stage" id="stage"></div>
-<a class="attr" href="/" tabindex="-1">Ahad Co</a>
+<a class="attr" href="/" tabindex="-1">CodeNest</a>
 <a class="attr rep" id="reportLink" href="/report-abuse" tabindex="-1">Report abuse</a>
 <script>document.getElementById('reportLink').href='/report-abuse?url='+encodeURIComponent(location.href);</script>
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>

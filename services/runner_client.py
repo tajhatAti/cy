@@ -18,7 +18,7 @@ import logging
 import requests
 from fastapi import HTTPException
 
-logger = logging.getLogger("ahad-co-app")
+logger = logging.getLogger("codenest-app")
 
 MAX_JOBS_PER_USER = 3  # free tier guardrail
 

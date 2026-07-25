@@ -98,7 +98,7 @@ def signup(user: UserSignup, request: Request):
                 WHERE id=?
             """, (hashed_pw, otp, current_time, current_time, current_time, existing["id"]))
             conn.commit()
-            email_service.send_email(email, "Verify your Ahad Co account", otp, username, "Email Verification")
+            email_service.send_email(email, "Verify your CodeNest account", otp, username, "Email Verification")
             return {
                 "message": "Welcome back! A fresh verification code was sent to your email.",
                 "resent": True,
@@ -113,7 +113,7 @@ def signup(user: UserSignup, request: Request):
         conn.commit()
         inserted_user_id = cursor.lastrowid
 
-        email_service.send_email(email, "Verify your Ahad Co account", otp, username, "Email Verification")
+        email_service.send_email(email, "Verify your CodeNest account", otp, username, "Email Verification")
         return {"message": "Account created. Check your email for the verification code.", "expires_in": OTP_EXPIRY_MINUTES * 60}
 
     except HTTPException:
@@ -312,7 +312,7 @@ def forgot_password(payload: ForgotPasswordRequest, request: Request):
         """, (otp, current_time, current_time, row["id"]))
         conn.commit()
 
-        email_service.send_email(email, "Reset your Ahad Co password", otp, row["username"], "Password Reset")
+        email_service.send_email(email, "Reset your CodeNest password", otp, row["username"], "Password Reset")
         return {"message": "If this email exists, a reset code has been sent.", "expires_in": OTP_EXPIRY_MINUTES * 60}
     finally:
         conn.close()
@@ -443,7 +443,7 @@ def setup_2fa(payload: TwoFactorSetup, authorization: Optional[str] = Header(Non
             
             # Generate QR code
             totp = pyotp.TOTP(secret)
-            uri = totp.provisioning_uri(name=user["username"], issuer_name="Ahad Co")
+            uri = totp.provisioning_uri(name=user["username"], issuer_name="CodeNest")
             
             # Generate QR image
             qr = qrcode.QRCode(version=1, box_size=10, border=4)

@@ -661,14 +661,19 @@ document.getElementById("btnVerify").addEventListener("click", async () => {
     document.getElementById("su_username").value = "";
     document.getElementById("su_email").value = "";
     document.getElementById("su_password").value = "";
-    resetLocalActivity();   // drop any stale entries from earlier sessions
+    resetLocalActivity();
+    try { localStorage.setItem("ahad_user", JSON.stringify({username: data.username, ts: Date.now()})); } catch(e){}
     logEvent("success", "Email verified", `Account confirmed: ${username}`);
-    await loadDashboard();
     btnOk(btn, () => {
       stopOtpExpiry();
+      clearOtpBoxes("otpBoxesSignup");
+      document.getElementById("su_username").value = "";
+      document.getElementById("su_email").value = "";
+      document.getElementById("su_password").value = "";
       showScreen("screen-dashboard");
-      _consumeReturnTo();   // deep link pending? go there now
-      toast("Email verified! Welcome!", "success");
+      _consumeReturnTo();
+      toast(`Welcome, ${data.username}!`, "success");
+      loadDashboard().catch(() => {});
       syncActivityFromServer();
     });
   } catch (err) {
@@ -698,6 +703,7 @@ async function handleSignin(e) {
   const btn = document.getElementById("btnSignin");
   const username = document.getElementById("si_username").value.trim();
   const password = document.getElementById("si_password").value;
+  if (!username || !password) { toast("Please enter username and password", "error"); return; }
   btnBusy(btn);
   try {
     const data = await api("/login", "POST", { username, password });
@@ -719,16 +725,27 @@ async function handleSignin(e) {
     }
     authToken = data.token;
     localStorage.setItem("ahad_token", authToken);
-    // Clear the form so the entered username/password never lingers (e.g. via bfcache Back).
-    document.getElementById("si_username").value = "";
-    document.getElementById("si_password").value = "";
-    resetLocalActivity();   // no leftovers from any previous account
+    // Keep minimal user cache so that a container restart (which wipes the
+    // in-memory SQLite on free-tier Render) doesn't show "Session expired"
+    // on the very next click — bootstrap the dashboard from cache while we
+    // re-verify against the server.
+    try { localStorage.setItem("ahad_user", JSON.stringify({username: data.username, ts: Date.now()})); } catch(e){}
+    resetLocalActivity();
     logEvent("success", "Sign-in successful", `Welcome back, ${data.username}`);
-    await loadDashboard();
+    // 👉 SWITCH TO DASHBOARD RIGHT AWAY (don't await data first — that caused
+    // the dreaded 2-s "empty inputs staring back at you" lag). Skeleton
+    // placeholders paint instantly, then data fills in behind the scenes.
     btnOk(btn, () => {
+      // Clear inputs AFTER screen slides out so user never sees them vanish
+      // while still on the sign-in card — avoids "wait where did my
+      // password go? did it fail?" UX.
+      document.getElementById("si_username").value = "";
+      document.getElementById("si_password").value = "";
       showScreen("screen-dashboard");
-      _consumeReturnTo();   // deep link pending? go there now
-      toast("Welcome back!", "success");
+      _consumeReturnTo();
+      toast(`Welcome back, ${data.username}!`, "success");
+      // Fire-and-forget data load — errors are reported inline on dashboard
+      loadDashboard().catch(() => {});
       syncActivityFromServer();
     });
   } catch (err) {
@@ -862,10 +879,15 @@ function _clearIds(ids) { (ids || []).forEach(i => { const e = document.getEleme
 /* Professional loading state: Supabase-style shimmering skeleton bars
    (subtle pulse, no gimmicks) — used by every section while data flies. */
 function _skel(rows = 3) {
-  let h = '<div class="skel-wrap" aria-hidden="true">';
+  // Vercel/Linear-style shimmer skeleton for the jobs sidebar (paints instantly
+  // while loadJobs() is in flight — makes tab switch feel instant).
+  let h = '<div class="rs-skel-wrap" aria-hidden="true">';
   for (let i = 0; i < rows; i++) {
-    h += '<div class="skel-row"><span class="skel-ic"></span>' +
-         '<span class="skel-lines"><i class="skel-bar w70"></i><i class="skel-bar w40"></i></span></div>';
+    h += '<div class="rs-skel-job">' +
+           '<span class="rs-skel-dot"></span>' +
+           '<span class="rs-skel" style="flex:1"></span>' +
+           '<span class="rs-skel" style="width:16px;height:16px;border-radius:4px"></span>' +
+         '</div>';
   }
   return h + "</div>";
 }
@@ -1027,15 +1049,16 @@ async function saveSnippet(keepEditor) {
   const title = document.getElementById("snippetTitle").value.trim();
   const language = document.getElementById("snippetLanguage").value;
   const content = cmEditor ? cmEditor.getValue() : document.getElementById("snippetContent").value;
+  if (!title) { toast("Please enter a file name first", "error"); const _t=document.getElementById("snippetTitle"); if(_t)_t.focus(); return; }
   if (!content.trim()) { toast("Snippet content cannot be empty!", "error"); return; }
   try {
     let savedId = editingSnippetId;
-    if (editingSnippetId) { await api("/snippets", "PUT", { id: editingSnippetId, title: title || "Untitled", language, content }, true); toast("Snippet updated! </>", "success"); }
+    if (editingSnippetId) { await api("/snippets", "PUT", { id: editingSnippetId, title: title, language, content }, true); toast("Snippet updated! </>", "success"); }
     else {
-      const r = await api("/snippets", "POST", { title: title || "Untitled snippet", language, content }, true);
+      const r = await api("/snippets", "POST", { title: title, language, content }, true);
       editingSnippetId = r.id; savedId = r.id; toast("Snippet saved! </>", "success");
     }
-    logEvent("success", "Snippet saved", title || "Untitled");
+    logEvent("success", "Snippet saved", title);
     await loadSnippets();
     // Reset to a clean editor after save — no stale content on the next "new".
     if (!keepEditor) newSnippetDraft(true);
@@ -1148,21 +1171,13 @@ async function loadSnippets() {
     const origin = window.location.origin + window.location.pathname.replace(/index\.html$/, "").replace(/\/$/, "");
     list.innerHTML = snips.map(s => {
       const shared = s.share_token && s.is_public;
-      const url = shared ? (origin + "/s/" + s.share_token) : "";
-      const preview = (s.content || "").substring(0, 120);
-      return '<div class="snippet-item">' +
-        '<div class="snippet-top">' +
-          '<div class="snippet-head"><span class="snippet-lang">' + escapeHtml(s.language || "text") + '</span><h4>' + escapeHtml(s.title) + '</h4></div>' +
+      const url = shared ? (origin + "/@" + (window.__user || "me") + "/" + encodeURIComponent(s.title)) : "";
+      return '<div class="snippet-item" data-id="'+s.id+'" onclick="loadSnippetIntoEditor('+s.id+')" title="'+escapeHtml(s.title)+'">' +
+          '<div class="snippet-head"><h4>' + escapeHtml(s.title) + '</h4></div>' +
           '<div class="snippet-actions">' +
-            '<button class="xbtn" onclick="loadSnippetIntoEditor(' + s.id + ')">' + ic("folder-open") + ' Open</button>' +
-            '<button class="xbtn" onclick="copySnippetCode(' + s.id + ')">' + ic("copy") + ' Copy</button>' +
-            '<button class="xbtn" onclick="toggleSnippetShare(' + s.id + ', ' + (shared ? 1 : 0) + ', this)">' + (shared ? ic("globe") + " Unpublish" : ic("rocket") + " Publish") + '</button>' +
-            '<button class="xbtn delete" onclick="deleteSnippet(' + s.id + ', this)" title="Delete">' + ic("trash") + '</button>' +
+            '<button class="xbtn delete" onclick="event.stopPropagation();deleteSnippet(' + s.id + ', this)" title="Delete">×</button>' +
           '</div>' +
-        '</div>' +
-        '<pre class="snippet-code"><code>' + escapeHtml(preview) + ((s.content || "").length > 120 ? "\n…" : "") + '</code></pre>' +
-        (shared ? '<div class="snippet-share-url"><span>Published at:</span><code>' + escapeHtml(url) + '</code><a class="xbtn" href="' + escapeHtml(url) + '" target="_blank" rel="noopener">Open page ↗</a></div>' : '<div class="snippet-share-url muted"><span>Not published — click Publish to deploy a standalone static page.</span></div>') +
-      '</div>';
+        '</div>';
     }).join("");
   } catch (err) { if (!err || err.kind !== "infra") toast("Could not load snippets: " + err.message, "error"); _loadErrorBox(document.getElementById("snippetsList"), "snippets", loadSnippets, err); }
 }
@@ -1182,7 +1197,19 @@ async function loadSnippetIntoEditor(id) {
     updateCodeMirrorMode();
     updateEditorMeta();
     runLivePreview();
-    toast("Loaded into editor", "info");
+    // Publish status in status bar
+    const sErr = document.getElementById("csStatusErr");
+    const pubBtn = document.getElementById("btnShareSnippet");
+    if (s.share_token && s.is_public) {
+      const uname = window.__user || "me";
+      const pretty = window.location.origin + "/@" + uname + "/" + encodeURIComponent(s.title||"untitled");
+      if (sErr) sErr.innerHTML = '● <a href="'+pretty+'" target="_blank" rel="noopener" style="color:#3fb950">live</a>';
+      if (pubBtn) { pubBtn.classList.add("is-published"); const sp = pubBtn.querySelector('span'); if(sp) sp.textContent = "Live"; }
+    } else {
+      if (sErr) sErr.innerHTML = '';
+      if (pubBtn) { pubBtn.classList.remove("is-published"); const sp = pubBtn.querySelector('span'); if(sp) sp.textContent = "Publish"; }
+    }
+    toast("Loaded", "info");
     _scrollToEl(document.querySelector("#tab-code .cs-canvas"));
   } catch (err) { toast(err.message, "error"); }
 }
@@ -1196,15 +1223,20 @@ async function deleteSnippet(id, btn) {
 /* Share the snippet currently in the editor (creates if unsaved). */
 async function shareCurrentSnippet() {
   const btn = document.getElementById("btnShareSnippet");
-  const oldLabel = btn ? btn.textContent : "";
-  if (btn && !btn.classList.contains("loading")) btn.textContent = "Publishing…";
+  if (btn) {
+    btn.classList.add("is-firing");
+    btn.classList.add("loading");
+  }
   try {
     let id = editingSnippetId;
     if (!id) { id = await saveSnippet(true); }
     if (!id) return;
     await toggleSnippetShare(id, undefined, btn);
   } finally {
-    if (btn) btn.textContent = oldLabel;
+    if (btn) {
+      btn.classList.remove("loading");
+      setTimeout(() => btn.classList.remove("is-firing"), 600);
+    }
   }
 }
 
@@ -1220,20 +1252,24 @@ function showPubBar(url) {
     else return;
   }
   bar.style.display = "flex";
+  const canonUrl = arguments[1] || url;
   bar.innerHTML =
     '<span class="pub-ic">' + ic("link") + '</span>' +
-    '<a class="pub-link" href="' + escapeHtml(url) + '" target="_blank" rel="noopener">' + escapeHtml(url) + '</a>' +
+    '<a class="pub-link" href="' + escapeHtml(canonUrl) + '" target="_blank" rel="noopener">' + escapeHtml(url) + '</a>' +
     '<span class="pub-acts">' +
       '<button class="xbtn" id="pubOpen">Open ↗</button>' +
       '<button class="xbtn" id="pubCopy">Copy</button>' +
       '<button class="xbtn" id="pubClose">✕</button>' +
     '</span>';
-  bar.querySelector("#pubOpen").addEventListener("click", () => window.open(url, "_blank", "noopener"));
+  bar.querySelector("#pubOpen").addEventListener("click", () => window.open(canonUrl, "_blank", "noopener"));
   bar.querySelector("#pubCopy").addEventListener("click", async () => {
     try { await navigator.clipboard.writeText(url); toast("Link copied", "success"); }
     catch (e) { toast("Copy failed", "error"); }
   });
   bar.querySelector("#pubClose").addEventListener("click", () => { bar.style.display = "none"; });
+  // Update status bar
+  const sErr = document.getElementById("csStatusErr");
+  if (sErr) sErr.innerHTML = '● <a href="'+escapeHtml(canonUrl)+'" target="_blank" rel="noopener">live</a>';
 }
 
 async function toggleSnippetShare(id, shared, btn) {
@@ -1249,23 +1285,49 @@ async function toggleSnippetShare(id, shared, btn) {
     } catch (e) {}
   }
   setLoading(btn, true);
+  // Publishing countdown animation
+  if (btn) {
+    const orig = btn.innerHTML;
+    let secs = 3;
+    btn.dataset.origHtml = orig;
+    btn.disabled = true;
+    btn.classList.add("publishing");
+    const tick = () => {
+      if (secs <= 0 || !btn.isConnected) { btn.innerHTML = orig; btn.disabled = false; btn.classList.remove("publishing"); return; }
+      btn.innerHTML = '<span style="display:inline-block;animation:pubSpin 0.8s linear infinite">⏳</span> Publishing '+secs+'s';
+      secs--;
+      setTimeout(tick, 1000);
+    };
+    tick();
+  }
   try {
     const res = await api("/snippets/share", "POST", { id, share: !nowShared }, true);
     if (res.share && res.url) {
-      // BUGFIX: origin only — never origin+pathname — or the broken
-      // /code/s/<tok> link happens when publishing from the Code tab.
-      const full = window.location.origin + res.url;
-      showPubBar(full);   // visible, tappable link — never silently clipboard-only
-      try { await navigator.clipboard.writeText(full); } catch (e) { /* bar already shows the link */ }
-      toast("Published! Your page is live", "success");
+      const curTitle = ((document.getElementById("snippetTitle")||{}).value||"untitled").trim();
+      const uname = (window.__user||"me");
+      const pretty = window.location.origin + "/@" + uname + "/" + encodeURIComponent(curTitle);
+      showPubBar(pretty, window.location.origin + res.url);
+      try { await navigator.clipboard.writeText(pretty); } catch (e) {}
+      toast("Published — link copied", "success");
+      // Update status bar
+      const sErr = document.getElementById("csStatusErr");
+      if (sErr) sErr.innerHTML = '● <a href="'+pretty+'" target="_blank" rel="noopener" style="color:#3fb950">live</a>';
+      // Switch publish button text / state
+      if (btn && btn.dataset) {
+        btn.classList.add("is-published");
+        btn.querySelector('span').textContent = "Live";
+      }
       logEvent("success", "Snippet shared", "Standalone page published");
     } else {
-      toast("Unpublished — the page is no longer live.", "info");
+      toast("Unpublished", "info");
+      const sErr = document.getElementById("csStatusErr");
+      if (sErr) sErr.innerHTML = '';
+      if (btn && btn.querySelector('span')) btn.querySelector('span').textContent = "Publish";
       logEvent("warning", "Snippet unshared", "");
     }
     await loadSnippets();
-  } catch (err) { toast(err.message, "error"); }
-  finally { setLoading(btn, false); }
+  } catch (err) { toast(err.message, "error"); if (btn) { btn.classList.remove("publishing"); btn.disabled = false; } }
+  finally { setLoading(btn, false); if (btn) { btn.classList.remove("publishing"); btn.disabled = false; } }
 }
 
 
@@ -1639,7 +1701,7 @@ function _tfaShowBackupCodes(freshlyEnabled) {
   chk.addEventListener("change", () => { done.disabled = !chk.checked; });
 }
 function _tfaDownloadCodes() {
-  const txt = "Ahad Co — 2FA backup codes\nSave these somewhere safe. Each code works ONCE.\n\n" + _tfa.codes.join("\n") + "\n";
+  const txt = "CodeNest — 2FA backup codes\nSave these somewhere safe. Each code works ONCE.\n\n" + _tfa.codes.join("\n") + "\n";
   _downloadBlob(new Blob([txt], { type: "text/plain;charset=utf-8" }),
     `ahadco-backup-codes-${new Date().toISOString().split("T")[0]}.txt`);
 }
@@ -1836,8 +1898,10 @@ async function loadStats() {
 const ROUTES = {
   "/dashboard": "overview", "/code": "code",
   "/runspace": "jobs", "/jobs": "jobs",
+  "/terminal": "term", "/term": "term",
   "/admin": "admin", "/profile": "profile",
 };
+const _JOB_PATH_RE = /^\/runspace\/([^/]+)\/([^/]+)\/?$/;
 const TAB_PATHS = {};
 Object.keys(ROUTES).forEach(p => { if (!TAB_PATHS[ROUTES[p]]) TAB_PATHS[ROUTES[p]] = p; });
 const AUTH_ROUTES = {
@@ -1879,6 +1943,21 @@ function routeFromUrl() {
     }
     showScreen("screen-dashboard");
     if (ROUTES[p] !== currentTab) _switch(ROUTES[p]);
+    return "tab";
+  }
+  // Deep link: /runspace/{username}/{slug} → open RunSpace and select the matching job.
+  const _jd = p.match(_JOB_PATH_RE);
+  if (_jd) {
+    if (!hasToken) {
+      try { sessionStorage.setItem("ahad_return_to", p); } catch (e2) {}
+      history.replaceState({}, "", "/sign-in");
+      showScreen("screen-signin");
+      return "blocked";
+    }
+    showScreen("screen-dashboard");
+    window.__rs_deep_slug = decodeURIComponent(_jd[2] || "");
+    if (currentTab !== "jobs") _switch("jobs");
+    else _deepSelectJobBySlug(window.__rs_deep_slug);
     return "tab";
   }
   if (AUTH_ROUTES[p]) {
@@ -2013,20 +2092,9 @@ document.addEventListener("DOMContentLoaded", () => {
   const btnStartJob = document.getElementById("btnStartJob");
   if (btnStartJob) btnStartJob.addEventListener("click", startJob);
   const jobLogClose = document.getElementById("jobLogClose");
-  if (jobLogClose) jobLogClose.addEventListener("click", closeJobLogs);
-  const jobLogRefresh = document.getElementById("jobLogRefresh");
-  if (jobLogRefresh) jobLogRefresh.addEventListener("click", refreshJobLogs);
-  const jobLogCopy = document.getElementById("jobLogCopy");
-  if (jobLogCopy) jobLogCopy.addEventListener("click", copyJobLogs);
-  const jobLogFull = document.getElementById("jobLogFull");
-  if (jobLogFull) jobLogFull.addEventListener("click", toggleFullLogs);
-  const jobLogBody = document.getElementById("jobLogBody");
-  if (jobLogBody) jobLogBody.addEventListener("scroll", _setLogFollow);
-  // Ctrl+Enter inside the jobs code box = start the job (power-users' shortcut)
-  const jobCodeEl = document.getElementById("jobCode");
-  if (jobCodeEl) jobCodeEl.addEventListener("keydown", (e) => {
-    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); startJob(); }
-  });
+  if (jobLogClose) jobLogClose.addEventListener("click", () => { deselectJob(); });
+  // (RunSpace log controls are wired in _initIDEWiring to avoid double-binding)
+  // (log-body auto-follow is wired in _initIDEWiring after the CM editor is up)
   const btnFormatSnippet = document.getElementById("btnFormatSnippet");
   if (btnFormatSnippet) btnFormatSnippet.addEventListener("click", formatSnippet);
   const btnShareSnippet = document.getElementById("btnShareSnippet");
@@ -2268,282 +2336,1309 @@ async function showLoginHistory() {
   } catch (err) { toast(err.message, "error"); }
 }
 
-/* ==================== ⚡ ALWAYS-ON JOBS (24/7 tasks) ====================
-   Frontend for /api/jobs — start/stop/restart persistent background tasks
-   running on the runner service, with live logs. */
-let _jobsTimer = null;
-let _jobLogFor = null;
-let _lastJobsSig = null; // change detection: skip re-render when nothing moved.
-                         // MUST be null (not "") — the empty-list signature is "",
-                         // and "" === "" would skip the very first render forever.
+/* ==================== ⚡ ALWAYS-ON JOBS (THE WORKBENCH) ====================
+   Free 24/7 bot/code hosting. Signature UI: oak sidebar + warm amber accents
+   + CodeMirror editor + draggable split terminal pane. Everything hand-built,
+   no framework clone.
+   ====================================================================== */
 
+let _jobsTimer = null;
+let _lastJobsSig = null;
+let _lastJobsTs = 0;   // epoch of last successful load (for skeleton-stale heuristic)
+
+// ─── RunSpace CodeMirror editor ────────────────────────────────────────
+let _jobCm = null;
+
+function _jobCmModeForLang(lang) {
+  const l = (lang || "python").toLowerCase();
+  if (l === "python" || l === "py" || l === "python3") return "python";
+  if (l === "javascript" || l === "js" || l === "node" || l === "nodejs") return "javascript";
+  if (l === "bash" || l === "sh" || l === "shell") return "shell";
+  if (l === "ruby" || l === "rb") return "ruby";
+  if (l === "php") return "application/x-httpd-php";
+  return "python";
+}
+
+function initJobCodeMirror() {
+  const ta = document.getElementById("jobCode");
+  if (!ta || typeof CodeMirror === "undefined") return;
+  if (_jobCm) return;
+  try {
+    _jobCm = CodeMirror.fromTextArea(ta, {
+      lineNumbers: true,
+      theme: "default",
+      mode: "python",
+      lineWrapping: false,
+      indentUnit: 2,
+      tabSize: 2,
+      indentWithTabs: false,
+      autoCloseBrackets: true,
+      matchBrackets: true,
+      styleActiveLine: true,
+      extraKeys: {
+        "Ctrl-S": function(cm) { startJob(); },
+        "Cmd-S":  function(cm) { startJob(); },
+        "Ctrl-Enter": function(cm) { startJob(); },
+        "Cmd-Enter":  function(cm) { startJob(); },
+        "Tab": function(cm) {
+          if (cm.somethingSelected()) cm.indentSelection("add");
+          else cm.replaceSelection("  ", "end");
+        },
+        "Shift-Tab": function(cm) {
+          if (cm.somethingSelected()) cm.indentSelection("subtract");
+          else cm.execCommand("indentLess");
+        },
+        "Ctrl-/": function(cm) { cm.toggleComment && cm.toggleComment(); },
+        "Cmd-/":  function(cm) { cm.toggleComment && cm.toggleComment(); },
+      }
+    });
+    _jobCm.on("change", (cm) => {
+      ta.value = cm.getValue();
+      _updateStats();
+      _jobDirty = true;
+      _reflectJobStatus(_selectedJobId); // swap Run/Details based on dirty state
+    });
+    _jobCmSetMode("python");
+  } catch (e) { console.error("initJobCodeMirror:", e); }
+}
+
+function _jobCmSetMode(lang) {
+  if (!_jobCm || typeof CodeMirror === "undefined") return;
+  const m = _jobCmModeForLang(lang);
+  _jobCm.setOption("mode", m);
+  const el = document.getElementById("cmMode");
+  if (el) el.textContent = lang || "python";
+}
+
+function _jobCmSetValue(code) {
+  const ta = document.getElementById("jobCode");
+  if (!ta) return;
+  const v = code || "";
+  ta.value = v;
+  if (_jobCm) _jobCm.setValue(v);
+  _updateStats();
+}
+
+function _jobCmGetValue() {
+  const ta = document.getElementById("jobCode");
+  if (_jobCm) return _jobCm.getValue();
+  return ta ? ta.value : "";
+}
+
+function _jobCmFocus() {
+  if (_jobCm) { _jobCm.focus(); }
+  else { const t = document.getElementById("jobCode"); if (t) t.focus(); }
+}
+
+function _jobCmRefresh() {
+  if (_jobCm) { setTimeout(() => { try { _jobCm.refresh(); } catch(e){} }, 40); }
+}
+
+// ─── Jobs helpers ─────────────────────────────────────────────────────
+function _slugify(s) {
+  return String(s || "")
+    .toLowerCase()
+    .trim()
+    .replace(/['']/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80) || "untitled";
+}
+function _deepSelectJobBySlug(slug) {
+  if (!slug || !window._lastJobs || !window._lastJobs.length) return;
+  const j = window._lastJobs.find(x => _slugify(x.name) === slug);
+  if (j) selectJob(j.id);
+}
+function _updateJobUrl(job) {
+  try {
+    const u = (window.__user && window.__user.username) ? window.__user.username : null;
+    if (!u || !job || !job.name) return;
+    const path = "/runspace/" + encodeURIComponent(u) + "/" + _slugify(job.name);
+    if (_clientPath() !== path && !_routeNav) {
+      history.replaceState({tab:"jobs",jobId:job.id}, "", path);
+    }
+  } catch (e) {}
+}
+
+// ─── Jobs data ────────────────────────────────────────────────────────
 async function loadJobs() {
   const list = document.getElementById("jobsList");
   if (!list) return;
-  if (_lastJobsSig === null) list.innerHTML = _skel(2);
+  // Show shimmer skeleton while the list is empty or we've returned to the tab
+  // and data is stale (>10s old) — gives instant visual feedback on tab switch.
+  const emptyOrStale = !list.children.length ||
+    !list.querySelector(".job-item") ||
+    (_lastJobsTs && Date.now() - _lastJobsTs > 10000);
+  if (emptyOrStale) list.innerHTML = _skel(Math.min(6, (window._lastJobs||[]).length || 4));
   try {
     const data = await api("/api/jobs", "GET", null, true);
-    // Flicker guard: rebuild the list ONLY when statuses actually changed
-    // (uptime seconds ticking must not steal DOM/repaint every 7s).
     const jobs = (data && data.jobs) || [];
     const sig = jobs.map(j => [j.id, j.status, j.restarts, j.web ? 1 : 0, j.web_public === false ? 0 : 1].join(":")).join("|");
     if (sig !== _lastJobsSig) { _lastJobsSig = sig; renderJobs(jobs); }
+    _lastJobsTs = Date.now();
   } catch (e) {
     const sig = "ERR:" + e.message;
     if (sig === _lastJobsSig) return;
     _lastJobsSig = sig;
-    _loadErrorBox(list, "jobs", loadJobs, e);   // inline error + retry, never a stuck state
+    _loadErrorBox(list, "deployments", loadJobs, e);
   }
 }
 
 function _fmtUptime(s) {
   s = s || 0;
-  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+  const h = Math.floor(s/3600), m = Math.floor((s%3600)/60), sec = s%60;
   if (h) return h + "h " + m + "m";
   if (m) return m + "m " + sec + "s";
   return sec + "s";
 }
 
-function renderJobs(jobs) {
-  const list = document.getElementById("jobsList");
-  if (!list) return;
-  list.innerHTML = "";
-  if (!jobs.length) {
-    const div = document.createElement("div");
-    div.className = "jobs-empty";
-    div.innerHTML = ic("zap") + ' Nothing deployed yet — paste code above and press <b>Deploy 24/7</b>.';
-    list.appendChild(div);
+let _selectedJobId = null;
+let _logSSE = null;
+let _logFollow = true;
+let _jobDirty = false;          // code changed since last deploy (enables Run button)
+let _suppressAutoSelect = 0;   // ms epoch until which renderJobs() must NOT auto-select a job (New-flow race guard)
+
+function _fmtStatus(st) {
+  st = (st || "offline").toLowerCase();
+  const map = {
+    "running":        {cls:"ok",   label:"RUNNING",       badge:"running",    dot:"running"},
+    "starting":       {cls:"warn", label:"STARTING",      badge:"starting",   dot:"installing"},
+    "installing":     {cls:"warn", label:"INSTALLING",    badge:"installing", dot:"installing"},
+    "stopped":        {cls:"",     label:"STOPPED",       badge:"stopped",    dot:"stopped"},
+    "offline":        {cls:"warn", label:"OFFLINE",       badge:"offline",    dot:"offline"},
+    "crashed":        {cls:"err",  label:"CRASHED",       badge:"crashed",    dot:"crashed"},
+    "install_failed": {cls:"err",  label:"INSTALL FAILED",badge:"error",     dot:"crashed"},
+  };
+  return map[st] || {cls:"", label:st.toUpperCase(), badge:st, dot:"offline"};
+}
+
+// ─── RunSpace-local escape helper (alias to the global escapeHtml) ────
+function _escapeHtml(s) { return escapeHtml(s == null ? "" : String(s)); }
+
+// ─── Log line colorization ────────────────────────────────────────────
+function _colorizeLine(line) {
+  if (!line) return "";
+  let s = _escapeHtml(line);
+  if (/^\[system\]/.test(line)) return '<span class="log-line log-sys">' + s + '</span>';
+  const re = /^(\[[^\]]+\])?\s*(\[[A-Za-z _]+\])?\s*((?:https?:\/\/|\/)[^\s]+)?\s*(\b\d{3}\b)?\s*(-|:)?\s*(.*)$/;
+  const m = line.match(re);
+  if (m) {
+    let [, ts, lvl, url, code, , msg] = m;
+    let out = '<span class="log-line">';
+    if (ts)  out += '<span class="log-ts">' + _escapeHtml(ts) + '</span> ';
+    if (lvl) {
+      const raw = lvl.replace(/^\[/,"").replace(/\]$/,"").trim().toLowerCase();
+      const cls = (raw === "info" ? "info" : raw === "warn" || raw === "warning" ? "warn" :
+                   raw === "err" || raw === "error" ? "err" :
+                   raw === "ok" || raw === "success" ? "ok" : "info");
+      out += '<span class="log-lvl ' + cls + '">' + _escapeHtml(lvl) + '</span> ';
+    }
+    if (url) out += '<span class="log-url">' + _escapeHtml(url) + '</span> ';
+    if (code) {
+      const c = parseInt(code, 10);
+      const cc = c >= 500 ? "c5xx" : c >= 400 ? "c4xx" : c >= 300 ? "c300" : c >= 200 ? "c2xx" : "";
+      out += '<span class="log-code ' + cc + '">' + _escapeHtml(code) + '</span> ';
+    }
+    if (msg) out += '<span class="log-msg">' + _escapeHtml(msg) + '</span>';
+    return out + '</span>';
+  }
+  s = s.replace(/\b(200 OK|201 Created|204 No Content)\b/g, '<span class="log-code c2xx">$1</span>');
+  s = s.replace(/\b(4\d{2}(?:\s+[A-Za-z]+)?)\b/g, '<span class="log-code c4xx">$1</span>');
+  s = s.replace(/\b(5\d{2}(?:\s+[A-Za-z]+)?)\b/g, '<span class="log-code c5xx">$1</span>');
+  s = s.replace(/(\[INFO\])/gi, '<span class="log-lvl info">$1</span>');
+  s = s.replace(/(\[WARN(?:ING)?\])/gi, '<span class="log-lvl warn">$1</span>');
+  s = s.replace(/(\[ERR(?:OR)?\])/gi, '<span class="log-lvl err">$1</span>');
+  s = s.replace(/(\[OK\])/gi, '<span class="log-lvl ok">$1</span>');
+  s = s.replace(/((?:https?:\/\/|\/)[^\s]+)/g, '<span class="log-url">$1</span>');
+  return '<span class="log-line">' + s + '</span>';
+}
+
+function _renderLogs(text) {
+  const body = document.getElementById("jobLogBody");
+  const dot = document.getElementById("jobLogTitle");
+  if (!body) return;
+  if (!text || !text.trim()) {
+    body.innerHTML = '<span class="rs-log-empty">// Logs will appear here when you run the job.</span>';
+    if (dot) { dot.className = "rs-log-dot"; dot.title = "idle"; }
+    _reflectJobStatus(_selectedJobId);
     return;
   }
-  jobs.forEach(j => {
-    const st = (j.status || "offline").toLowerCase();
-    const card = document.createElement("div");
-    card.className = "job-card";
-    const isPub = j.web_public !== false;
-    // Row 1: status dot + name (left) — action buttons (right)
-    // Row 2: meta info, full width. Consistent alignment, no ragged wrap.
-    // Row 3 (web jobs only): public URL + copy/open + access pill.
-    card.innerHTML =
-      '<div class="job-top">' +
-        '<span class="job-dot ' + st + '"></span>' +
-        '<span class="job-name">' + escapeHtml(j.name) + '</span>' +
-        (j.web_url && st === "running" && j.web
-          ? '<span class="job-pill ' + (isPub ? "pub" : "priv") + '">' + (isPub ? "Public" : "Private") + '</span>'
-          : '') +
-        '<span class="job-actions"></span>' +
-      '</div>' +
-      '<div class="job-meta">' + escapeHtml(j.language) + ' · ' +
-        (st === "installing" ? 'installing libraries… <span class="mini-spinner"></span>' : escapeHtml(st)) +
-        (j.uptime_s ? ' · up ' + _fmtUptime(j.uptime_s) : '') +
-        (j.restarts ? ' · restarts ' + j.restarts : '') +
-      '</div>';
-    // Public URL row: ONLY when the runner actually detected a web listener.
-    if (j.web_url && j.web && st === "running") {
-      const shownUrl = isPub ? j.web_url : (j.web_private_url || j.web_url);
-      const row = document.createElement("div");
-      row.className = "job-url";
-      row.innerHTML = ic("globe") + '<code title="' + escapeHtml(shownUrl) + '">' + escapeHtml(shownUrl) + '</code>';
-      const mk2 = (label, title, fn) => {
-        const b = document.createElement("button");
-        b.className = "xbtn"; b.innerHTML = label; b.title = title;
-        b.addEventListener("click", fn); row.appendChild(b);
-      };
-      mk2(ic("copy"), "Copy URL", () => copyText(shownUrl));
-      mk2(ic("external"), "Open in new tab", () => window.open(shownUrl, "_blank", "noopener"));
-      mk2(ic(isPub ? "lock" : "globe"), isPub ? "Make private (only you can open it)" : "Make public (anyone with the link)",
-        () => toggleJobAccess(j.id, !isPub));
-      card.appendChild(row);
+  const lines = text.split(/\r?\n/);
+  const tail = lines.slice(-600);
+  body.innerHTML = tail.map(_colorizeLine).join("\n");
+  if (_logFollow) body.scrollTop = body.scrollHeight;
+  if (dot) { dot.className = "rs-log-dot running"; dot.title = "streaming"; }
+}
+
+// ─── Workspace chrome ─────────────────────────────────────────────────
+function _showWorkspace(job) {
+  const emp = document.getElementById("wbEmpty");
+  const ws = document.getElementById("wbWorkspace");
+  if (emp) emp.style.display = "none";
+  if (ws)  ws.style.display = "flex";
+  _reflectJobStatus(job);
+  _jobCmRefresh();
+}
+
+function _clearWorkspaceChrome() {
+  const body = document.getElementById("jobLogBody");
+  if (body) body.innerHTML = '<span class="rs-log-empty">// Logs will appear here when you run the job.</span>';
+  const dot = document.getElementById("jobLogTitle");
+  if (dot) { dot.className = "rs-log-dot"; dot.title = "idle"; }
+  const rs = document.getElementById("wbRunnerStat");
+  if (rs) { rs.className = "rs-status-dot"; rs.title = "idle"; rs.style.background=""; rs.style.boxShadow=""; }
+  const btnRun  = document.getElementById("btnStartJob");
+  const btnStop = document.getElementById("btnStopJob");
+  const btnRest = document.getElementById("btnRestartJob");
+  if (btnRun)  btnRun.style.display = "";
+  if (btnStop) btnStop.style.display = "none";
+  if (btnRest) btnRest.style.display = "none";
+}
+function _showEmpty() {
+  const emp = document.getElementById("wbEmpty");
+  const ws  = document.getElementById("wbWorkspace");
+  if (emp) emp.style.display = "";
+  if (ws)  ws.style.display = "none";
+  const n = document.getElementById("jobName"); if (n) n.value = "";
+  const langEl = document.getElementById("jobLang");
+  if (langEl) langEl.value = "python";
+  _jobCmSetValue("");
+  _jobCmSetMode("python");
+  _clearWorkspaceChrome();
+  _setHint("", "Ready");
+  _updateStats();
+  // Reset URL to plain /runspace when nothing is selected
+  try {
+    if (currentTab === "jobs" && !_routeNav) {
+      history.replaceState({tab:"jobs"}, "", "/runspace");
     }
-    const actions = card.querySelector(".job-actions");
-    const mkBtn = (label, cls, fn) => {
-      const b = document.createElement("button");
-      b.className = "job-btn" + (cls ? " " + cls : "");
-      b.innerHTML = label;
-      b.addEventListener("click", fn);
-      actions.appendChild(b);
+  } catch (e) {}
+}
+
+function _setHint(kind, msg) {
+  const dot = document.getElementById("wbRunnerStat");
+  if (!dot) return;
+  dot.className = "rs-status-dot";
+  dot.style.background = ""; dot.style.boxShadow = "";
+  if (kind === "ok")  dot.classList.add("ok");
+  if (kind === "err") dot.classList.add("bad");
+  if (kind === "warn") { dot.style.background = "#d29922"; dot.style.boxShadow = "0 0 0 2px rgba(210,153,34,.18)"; }
+  dot.title = msg || (kind === "ok" ? "ok" : kind === "warn" ? "working" : kind === "err" ? "error" : "idle");
+}
+
+function _updateStats() {
+  const el = document.getElementById("codeStats");
+  const v = _jobCmGetValue();
+  const lines = v ? v.split("\n").length : 0;
+  const chars = v ? v.length : 0;
+  if (el) el.textContent = lines + " lines · " + chars + " chars";
+}
+
+// Reflect current job status onto toolbar action buttons + sidebar dots + log dot.
+// Accepts a job object OR a job id (looked up from window._lastJobs).
+function _reflectJobStatus(jobOrId) {
+  let job = jobOrId;
+  if (jobOrId && typeof jobOrId !== "object") {
+    const id = String(jobOrId);
+    job = (window._lastJobs || []).find(x => String(x.id) === id) || null;
+  }
+  const stKey = (job && job.status) ? (job.status || "").toLowerCase() : "stopped";
+  const st = _fmtStatus(job && job.status);
+  const isLive = (stKey === "running" || stKey === "starting" || stKey === "installing");
+
+  const btnRun  = document.getElementById("btnStartJob");
+  const btnStop = document.getElementById("btnStopJob");
+  const btnRest = document.getElementById("btnRestartJob");
+  const btnDet  = document.getElementById("btnJobDetails");
+  const isSelected = !!job && !!btnRun && btnRun.dataset.editingId;
+  // When a saved job is live and code isn't dirty: Details button PRIMARY (Run
+  // hidden) because re-running would redeploy. Otherwise: Run primary + Details
+  // available for all saved jobs (stopped too — user may want to download/
+  // inspect env/timeline even after stop).
+  const detailsPrimary = isSelected && isLive && !_jobDirty;
+  if (btnRun) {
+    btnRun.style.display = detailsPrimary ? "none" : "";
+    // Visual "dirty" marker when code has been edited since last Run
+    btnRun.classList.toggle("dirty", !!_jobDirty && !!isSelected);
+    const lbl = btnRun.querySelector(".rs-btn-label");
+    if (lbl && !btnRun.classList.contains("loading")) {
+      lbl.textContent = _jobDirty ? "Save & run" : "Run";
+    }
+  }
+  if (btnDet)  btnDet.style.display  = isSelected ? "" : "none";
+  if (btnStop) btnStop.style.display = isLive ? "" : "none";
+  if (btnRest) btnRest.style.display = isLive ? "" : "none";
+
+  const rs = document.getElementById("wbRunnerStat");
+  if (rs) {
+    rs.className = "rs-status-dot";
+    rs.style.background = ""; rs.style.boxShadow = "";
+    if (stKey === "running")      { rs.classList.add("ok");  rs.title = "RUNNING"; }
+    else if (stKey === "crashed" || stKey === "install_failed") { rs.classList.add("bad"); rs.title = st.label; }
+    else if (stKey === "starting" || stKey === "installing")    { rs.style.background = "#d29922"; rs.style.boxShadow = "0 0 0 2px rgba(210,153,34,.18)"; rs.title = st.label; }
+    else                          { rs.title = st.label; }
+  }
+
+  const dot = document.getElementById("jobLogTitle");
+  if (dot) {
+    dot.className = "rs-log-dot";
+    if (stKey === "running")                               dot.classList.add("running");
+    else if (stKey === "crashed" || stKey === "install_failed") dot.classList.add("crashed");
+    else if (stKey === "starting" || stKey === "installing")   dot.classList.add("running"); // amber-ish via animation; keep pulse
+    dot.title = st.label;
+  }
+}
+
+function _setRunnerStat(text, cls) {
+  const s = document.getElementById("wbRunnerStat");
+  if (!s) return;
+  s.className = "rs-status-dot" + (cls ? " " + cls : "");
+  s.style.background = ""; s.style.boxShadow = "";
+  if (text) s.title = text;
+}
+
+function selectJob(id) {
+  if (id === null || id === undefined || id === "") { deselectJob(); return; }
+  id = String(id);
+  // Already selected → no re-fetch, no SSE reconnect (instant tab switch)
+  if (_selectedJobId === id) {
+    document.body.classList.remove("rs-side-open");
+    const tab = document.getElementById("tab-jobs");
+    if (tab) tab.classList.remove("side-open");
+    return;
+  }
+  _selectedJobId = id;
+  // 👉 Paint sidebar selection + swap to workspace IMMEDIATELY (don't wait for
+  // fetch/SSE to round-trip — that's what makes tab switches feel laggy).
+  // Data fills in behind the paint with a subtle fade.
+  document.querySelectorAll("#jobsList .job-item").forEach(el => {
+    el.classList.toggle("active", el.dataset.jid === _selectedJobId);
+  });
+  const btn = document.getElementById("btnStartJob");
+  if (btn) btn.dataset.editingId = _selectedJobId;
+  // Kick off data + log stream but DON'T await them. Instant visual response.
+  fetchJobDetail(id);
+  restartLogStream(id);
+  requestAnimationFrame(() => { try { _jobCmRefresh(); } catch(e){} });
+  // Update URL once job detail loads (we need the name)
+  setTimeout(() => { const j = (window._lastJobs||[]).find(x => String(x.id) === _selectedJobId); if (j) _updateJobUrl(j); }, 120);
+  document.body.classList.remove("rs-side-open");
+  const tab = document.getElementById("tab-jobs");
+  if (tab) tab.classList.remove("side-open");
+}
+
+function deselectJob() {
+  _selectedJobId = null;
+  stopLogStream();
+  document.querySelectorAll("#jobsList .job-item.active").forEach(el => el.classList.remove("active"));
+  const btn = document.getElementById("btnStartJob");
+  if (btn) delete btn.dataset.editingId;
+  const n = document.getElementById("jobName"); if (n) n.value = "";
+  const u = document.getElementById("jobRepoUrl"); if (u) u.value = "";
+  _jobCmSetValue("");
+  _updateStats();
+  _setHint("", "Ready");
+  document.body.classList.remove("rs-logs-open");
+  _showEmpty();
+}
+
+async function fetchJobDetail(id) {
+  try {
+    const token = localStorage.getItem("ahad_token") || "";
+    const r = await fetch("/api/jobs/" + id, {
+      headers: token ? {"Authorization": "Bearer " + token} : {}
+    });
+    if (!r.ok) { _showEmpty(); return; }
+    const job = await r.json();
+    window._lastJobs = window._lastJobs || [];
+    const idx = window._lastJobs.findIndex(x => String(x.id) === String(id));
+    if (idx >= 0) window._lastJobs[idx] = job; else window._lastJobs.push(job);
+    // Avoid wiping + re-setting identical code (CM setValue is the slow part on
+    // tab switch, especially for large files, and fires 'change' handlers).
+    const nEl = document.getElementById("jobName");
+    if (nEl && nEl.value !== (job.name || "")) nEl.value = job.name || "";
+    const langEl = document.getElementById("jobLang");
+    const newLang = job.language || "python";
+    if (langEl && langEl.value !== newLang) {
+      langEl.value = newLang; _jobCmSetMode(newLang);
+    }
+    const curCode = _jobCmGetValue();
+    if (curCode !== (job.code || "")) _jobCmSetValue(job.code || "");
+    _jobDirty = false;
+    _updateStats();
+    _showWorkspace(job);
+    _reflectJobStatus(job);
+    _setHint("ok", "");
+    // If the detail drawer is open, re-render it with the new job's data so
+    // clicking a different job in the sidebar swaps the drawer content too.
+    if (_jdOpen) { renderJobDetails(); }
+  } catch (e) { _showEmpty(); }
+}
+
+function stopLogStream() {
+  if (_logSSE) {
+    try { _logSSE.close(); } catch (e) {}
+    _logSSE = null;
+  }
+}
+
+function restartLogStream(id) {
+  stopLogStream();
+  _renderLogs("");
+  const token = localStorage.getItem("ahad_token") || "";
+  fetch("/api/jobs/" + id + "/logs", {
+    headers: token ? {"Authorization": "Bearer " + token} : {}
+  }).then(r => r.json()).then(d => _renderLogs(d.logs || "")).catch(()=>{});
+  try {
+    const es = new EventSource("/api/jobs/" + id + "/logs/stream?token=" + encodeURIComponent(token));
+    _logSSE = es;
+    es.onmessage = (ev) => {
+      try {
+        const d = JSON.parse(ev.data);
+        _renderLogs(d.logs || "");
+        window._lastJobs = window._lastJobs || [];
+        const job = window._lastJobs.find(x => String(x.id) === String(id));
+        if (job) { job.status = d.status; _reflectJobStatus(job); }
+        // Mirror logs + refresh details panel if open
+        if (_jdOpen && String(_selectedJobId) === String(id)) renderJobDetails();
+        const it = document.querySelector('#jobsList .job-item[data-jid="' + String(id).replace(/"/g,'\\"') + '"]');
+        if (it) {
+          it.classList.remove("running","crashed");
+          const sk = (d.status||"").toLowerCase();
+          if (sk === "running" || sk === "starting" || sk === "installing") it.classList.add("running");
+          if (sk === "crashed" || sk === "install_failed") it.classList.add("crashed");
+          const dot = it.querySelector(".jstatus-dot");
+          if (dot) {
+            dot.classList.remove("running","crashed");
+            if (sk === "running" || sk === "starting" || sk === "installing") dot.classList.add("running");
+            if (sk === "crashed" || sk === "install_failed") dot.classList.add("crashed");
+          }
+        }
+      } catch(e){}
     };
-    mkBtn(ic("history") + " Logs", "", () => viewJobLogs(j.id, j.name));
-    mkBtn(ic("refresh") + " Restart", "", () => restartJobById(j.id));
-    mkBtn(ic("square") + " Stop", "", () => stopJobById(j.id));
-    mkBtn(ic("trash"), "danger", (e) => deleteJobById(j.id, e.currentTarget));
-    list.appendChild(card);
+    es.onerror = () => { /* SSE auto-retries */ };
+  } catch(e) {}
+}
+
+function _langIcon(lang) {
+  const l = (lang || "py").toLowerCase();
+  if (l === "python" || l === "py" || l === "python3") return "py";
+  if (l === "javascript" || l === "js" || l === "node" || l === "nodejs") return "js";
+  if (l === "bash" || l === "sh" || l === "shell") return "sh";
+  if (l === "ruby" || l === "rb") return "rb";
+  if (l === "php") return "php";
+  return (lang || "py").slice(0,2).toLowerCase();
+}
+
+function renderJobs(jobs) {
+  const list = document.getElementById("jobsList");
+  const countEl = document.getElementById("txJobCount");
+  window._lastJobs = jobs || [];
+  if (countEl) countEl.textContent = jobs.length;
+  if (!list) return;
+  // Staggered fade-in for the list itself; skeleton is already visible.
+  list.innerHTML = "";
+  list.classList.remove("rs-fade-in");
+  // eslint-disable-next-line no-unused-expressions
+  void list.offsetWidth; // reflow to restart animation
+  list.classList.add("rs-fade-in");
+  if (!jobs.length) {
+    if (!_selectedJobId) _showEmpty();
+    return;
+  }
+  jobs.forEach((j, i) => {
+    const st = _fmtStatus(j.status);
+    const stKey = (j.status || "").toLowerCase();
+    const item = document.createElement("div");
+    item.className = "job-item rs-slide-in";
+    item.style.animationDelay = (Math.min(i, 10) * 18) + "ms";
+    if (_selectedJobId == j.id) item.classList.add("active");
+    if (stKey === "running" || stKey === "starting" || stKey === "installing") item.classList.add("running");
+    if (stKey === "crashed" || stKey === "install_failed") item.classList.add("crashed");
+    item.dataset.jid = String(j.id);
+    const li = _langIcon(j.language);
+    item.innerHTML =
+      '<span class="jlang-icon" title="' + _escapeHtml(j.language || "") + '">' + _escapeHtml(li) + '</span>' +
+      '<span class="jname">' + _escapeHtml(j.name || "untitled") + '</span>' +
+      '<span class="jstatus-dot' +
+        (stKey === "running" || stKey === "starting" || stKey === "installing" ? " running" : "") +
+        (stKey === "crashed" || stKey === "install_failed" ? " crashed" : "") +
+      '" title="' + _escapeHtml(st.label) + '"></span>' +
+      '<button type="button" class="jdel" title="Delete job" aria-label="Delete job">' +
+        '<svg viewBox="0 0 24" class="rs-ic-sm" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"/></svg>' +
+      '</button>';
+    item.addEventListener("click", (e) => {
+      if (e.target.closest(".jdel")) return;
+      selectJob(j.id);
+    });
+    const del = item.querySelector(".jdel");
+    if (del) {
+      del.addEventListener("click", (e) => {
+        e.preventDefault(); e.stopPropagation();
+        if (!confirm("Delete this job?")) return;
+        deleteJobById(j.id, del);
+      });
+    }
+    list.appendChild(item);
+  });
+  // Deep-link: if URL says /runspace/u/slug, pick that job regardless of running state
+  let deepPick = null;
+  if (window.__rs_deep_slug) deepPick = jobs.find(x => _slugify(x.name) === window.__rs_deep_slug);
+  if (deepPick) { selectJob(deepPick.id); window.__rs_deep_slug = null; _suppressAutoSelect = 0; }
+  else if (Date.now() < _suppressAutoSelect) {
+    // New was just clicked — do NOT auto-select; keep blank editor.
+    document.querySelectorAll("#jobsList .job-item.active").forEach(el => el.classList.remove("active"));
+    return;
+  }
+  else if (!_selectedJobId || !jobs.find(x => String(x.id) === String(_selectedJobId))) {
+    const running = jobs.find(x => (x.status||"").toLowerCase() === "running");
+    const pick = running || jobs[0];
+    if (pick) selectJob(pick.id);
+    else _showEmpty();
+  } else {
+    const cur = jobs.find(x => String(x.id) === String(_selectedJobId));
+    if (cur) { _showWorkspace(cur); _updateJobUrl(cur); }
+  }
+}
+
+function _initWbWiring() {
+  // Guard: never wire twice
+  const sentinel = document.getElementById("btnNew");
+  if (sentinel && sentinel.dataset.wired === "1") return;
+
+  const newBtn   = document.getElementById("btnNew");
+  const newBtn2  = document.getElementById("btnNew2");
+  const newBtnE  = document.getElementById("btnNewEmpty");
+  const menuBtn  = document.getElementById("wbMenuBtn");
+  const backdrop = document.getElementById("wbBackdrop");
+  const deselectBtn = document.getElementById("btnDeselect");
+  const btnStart = document.getElementById("btnStartJob");
+  const btnStop  = document.getElementById("btnStopJob");
+  const btnRest  = document.getElementById("btnRestartJob");
+
+  const onNew = (ev) => {
+    if (ev) { ev.preventDefault(); ev.stopPropagation(); }
+    // Hard reset: stop streams, null out selection, clear dirty flag
+    stopLogStream();
+    _selectedJobId = null;
+    _jobDirty = false;
+    document.querySelectorAll("#jobsList .job-item.active").forEach(el => el.classList.remove("active"));
+    const btn = document.getElementById("btnStartJob");
+    if (btn) delete btn.dataset.editingId;
+    // Suppress auto-select for the next 1500ms so any in-flight poll/loadJobs
+    // race cannot steal our blank editor and reload an old job.
+    _suppressAutoSelect = Date.now() + 1500;
+    const ws = document.getElementById("wbWorkspace");
+    const emp = document.getElementById("wbEmpty");
+    if (ws) ws.style.display = "flex";
+    if (emp) emp.style.display = "none";
+    _clearWorkspaceChrome();
+    _renderLogs("");
+    const n = document.getElementById("jobName"); if (n) { n.value = ""; n.classList.remove("rs-inp-err"); }
+    const u = document.getElementById("jobRepoUrl"); if (u) u.value = "";
+    const langEl = document.getElementById("jobLang");
+    if (langEl) { langEl.value = "python"; _jobCmSetMode("python"); }
+    _jobCmSetValue("");
+    _jobCmSetMode("python");
+    _setHint("", "Ready");
+    _updateStats();
+    document.body.classList.remove("rs-side-open","rs-logs-open");
+    const tab = document.getElementById("tab-jobs");
+    if (tab) tab.classList.remove("side-open");
+    // Reset URL to /runspace
+    try { if (!_routeNav) history.replaceState({tab:"jobs"}, "", "/runspace"); } catch(e){}
+    setTimeout(() => {
+      try { if (n) { n.focus(); } } catch(e){}
+      _jobCmRefresh();
+      _jobCmFocus();
+    }, 60);
+  };
+  if (newBtn)  { newBtn.addEventListener("click", onNew); newBtn.dataset.wired = "1"; newBtn.type = "button"; }
+  if (newBtn2) { newBtn2.addEventListener("click", onNew); newBtn2.type = "button"; newBtn2._w = 1; }
+  if (newBtnE) { newBtnE.addEventListener("click", onNew); newBtnE.type = "button"; newBtnE._w = 1; }
+  // Enter key in name / repo fields → Run (mobile keyboard "Go" support)
+  const nameField = document.getElementById("jobName");
+  const repoField = document.getElementById("jobRepoUrl");
+  const _enterRun = (e) => {
+    if (e.key === "Enter" || e.keyCode === 13) {
+      e.preventDefault(); e.stopPropagation();
+      startJob();
+    }
+  };
+  if (nameField) nameField.addEventListener("keydown", _enterRun);
+  if (repoField) repoField.addEventListener("keydown", _enterRun);
+  // Escape closes drawer / download menu
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" || e.keyCode === 27) {
+      const wrap = document.getElementById("jdDlWrap");
+      if (wrap && wrap.classList.contains("open")) { wrap.classList.remove("open"); return; }
+      if (document.body.classList.contains("rs-detail-open")) closeJobDetails();
+    }
+  });
+  if (deselectBtn) {
+    deselectBtn.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); deselectJob(); });
+    deselectBtn.type = "button";
+  }
+  if (menuBtn && backdrop) {
+    menuBtn.addEventListener("click", (e) => {
+      e.stopPropagation(); e.preventDefault();
+      document.body.classList.toggle("rs-side-open");
+    });
+    backdrop.addEventListener("click", () => {
+      document.body.classList.remove("rs-side-open");
+    });
+  }
+
+  try { initJobCodeMirror(); } catch (e) { console.error("[workbench] cm init:", e); }
+
+  const sel = document.getElementById("jobLang");
+  if (sel) sel.addEventListener("change", () => {
+    _jobCmSetMode(sel.value);
+    _updateStats();
+  });
+
+  // GitHub import helper — bound once; e.stopPropagation prevents bubbling
+  async function _handleImportGh() {
+    const u = ((document.getElementById("jobRepoUrl") || {}).value || "").trim();
+    if (!u) { toast("Paste a GitHub repo URL first", "warn"); return; }
+    btnGh.classList.add("loading");
+    btnGh.disabled = true;
+    _setHint("warn", "");
+    try {
+      let autoName = "";
+      const mm = u.match(/github\.com\/[^/]+\/([^/]+)/);
+      if (mm) autoName = mm[1].replace(/\.git$/,"");
+      const nameInp = document.getElementById("jobName");
+      if (nameInp && !nameInp.value.trim() && autoName) nameInp.value = autoName;
+      if (nameInp && !nameInp.value.trim()) nameInp.value = "Untitled Job";
+      const editingId = btnStart && btnStart.dataset.editingId;
+      const name = nameInp ? nameInp.value.trim() : (autoName || "Untitled Job");
+      const body = { repo_url: u, name, language: document.getElementById("jobLang").value, code: _jobCmGetValue() || "" };
+      const info = editingId
+        ? await api("/api/jobs/" + editingId, "PATCH", body, true)
+        : await api("/api/jobs", "POST", body, true);
+      toast("Repo deployed", "success");
+      await loadJobs();
+      if (info && info.job_db_id) selectJob(info.job_db_id);
+      _setHint("ok","");
+    } catch (err) {
+      toast(err.message, "error");
+      _setHint("err", err.message);
+    } finally {
+      btnGh.disabled = false;
+      btnGh.classList.remove("loading");
+    }
+  }
+  const btnGh = document.getElementById("btnImportGh");
+  if (btnGh && !btnGh._w) {
+    btnGh._w = 1;
+    btnGh.type = "button";
+    btnGh.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); _handleImportGh(); });
+  }
+  const repoInp = document.getElementById("jobRepoUrl");
+  if (repoInp) {
+    repoInp.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); btnGh && btnGh.click(); }
+    });
+  }
+
+  // Stop / Restart buttons → real API calls using currently selected job.
+  if (btnStop) {
+    btnStop.type = "button";
+    btnStop.addEventListener("click", (e) => {
+      e.preventDefault(); e.stopPropagation();
+      const id = _selectedJobId || (btnStart && btnStart.dataset.editingId);
+      if (!id) return;
+      stopJobById(id);
+    });
+  }
+  if (btnRest) {
+    btnRest.type = "button";
+    btnRest.addEventListener("click", (e) => {
+      e.preventDefault(); e.stopPropagation();
+      const id = _selectedJobId || (btnStart && btnStart.dataset.editingId);
+      if (!id) return;
+      restartJobById(id);
+    });
+  }
+
+  // Copy-success check icon (uses same stroke-width / viewBox as other icons)
+  const _checkIc = '<svg viewBox="0 0 24 24" class="rs-ic-sm" fill="none" stroke="#3fb950" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>';
+  // Log controls
+  const copy = document.getElementById("jobLogCopy");
+  if (copy) { copy.onclick = null; copy.addEventListener("click", (e) => {
+    e.preventDefault(); e.stopPropagation();
+    const body = document.getElementById("jobLogBody");
+    const t = body ? body.textContent : "";
+    if (!navigator.clipboard || !t) return;
+    navigator.clipboard.writeText(t).then(() => {
+      copy.classList.add("is-ok");
+      const orig = copy.innerHTML;
+      copy.innerHTML = _checkIc;
+      setTimeout(() => { copy.classList.remove("is-ok"); copy.innerHTML = orig; }, 1000);
+    });
+  }); }
+  const reload = document.getElementById("jobLogRefresh");
+  if (reload) { reload.onclick = null; reload.addEventListener("click", (e) => {
+    e.preventDefault(); e.stopPropagation();
+    const svg = reload.querySelector(".rs-ic-sm");
+    if (svg) { reload.classList.add("is-spinning"); svg.style.animation = "rsSpin .7s linear"; setTimeout(()=>{ svg.style.animation=""; reload.classList.remove("is-spinning"); },720); }
+    if (_selectedJobId) { fetchJobDetail(_selectedJobId); restartLogStream(_selectedJobId); }
+  }); }
+  const bottom = document.getElementById("jobLogBottom");
+  if (bottom) { bottom.onclick = null; bottom.addEventListener("click", (e) => {
+    e.preventDefault(); e.stopPropagation();
+    const body = document.getElementById("jobLogBody");
+    if (body) { _logFollow = true; body.scrollTop = body.scrollHeight; }
+  }); }
+  const clear = document.getElementById("jobLogClear");
+  if (clear) { clear.onclick = null; clear.addEventListener("click", (e) => {
+    e.preventDefault(); e.stopPropagation();
+    const body = document.getElementById("jobLogBody");
+    if (body) body.innerHTML = '<span class="rs-log-empty">// Logs cleared.</span>';
+  }); }
+  const dl = document.getElementById("jobLogDl");
+  if (dl) { dl.onclick = null; dl.addEventListener("click", (e) => {
+    e.preventDefault(); e.stopPropagation();
+    const body = document.getElementById("jobLogBody");
+    const name = (document.getElementById("jobName")||{}).value || "job";
+    const text = body ? body.textContent : "";
+    if (!text) { toast("Logs are empty","error"); return; }
+    const blob = new Blob([text],{type:"text/plain;charset=utf-8"});
+  const a=document.createElement("a"); a.href=URL.createObjectURL(blob);
+    a.download = name.replace(/[^\w.\-]+/g,"_")+'-'+new Date().toISOString().slice(0,10)+'.log';
+    document.body.appendChild(a); a.click();
+    setTimeout(function(){URL.revokeObjectURL(a.href);a.remove();},100);
+    toast("Logs downloaded","success");
+  }); }
+  const logBody = document.getElementById("jobLogBody");
+  if (logBody) logBody.addEventListener("scroll", () => {
+    _logFollow = logBody.scrollTop + logBody.clientHeight >= logBody.scrollHeight - 40;
+  });
+
+  _initSplitDrag();
+  _updateStats();
+}
+
+function _initSplitDrag() {
+  const divider = document.getElementById("wbDivider");
+  const split = document.getElementById("wbSplit");
+  const codePane = split && split.querySelector(".rs-pane.rs-editor");
+  const logPane  = split && split.querySelector(".rs-pane.rs-logs");
+  if (!divider || !split || !codePane || !logPane) return;
+  let dragging = false, startY = 0, startCodeH = 0, startLogH = 0;
+  divider.addEventListener("mousedown", (e) => {
+    dragging = true;
+    startY = e.clientY;
+    startCodeH = codePane.getBoundingClientRect().height;
+    startLogH  = logPane.getBoundingClientRect().height;
+    document.body.style.cursor = "ns-resize";
+    document.body.style.userSelect = "none";
+    e.preventDefault();
+  });
+  window.addEventListener("mousemove", (e) => {
+    if (!dragging) return;
+    const dy = e.clientY - startY;
+    const splitH = split.getBoundingClientRect().height - divider.getBoundingClientRect().height;
+    let newCode = startCodeH + dy;
+    const min = 120;
+    if (newCode < min) newCode = min;
+    if (newCode > splitH - min) newCode = splitH - min;
+    const newLog = splitH - newCode;
+    codePane.style.flex = `0 0 ${newCode}px`;
+    logPane.style.flex  = `0 0 ${newLog}px`;
+    if (_jobCm) _jobCm.refresh();
+  });
+  window.addEventListener("mouseup", () => {
+    if (dragging) { dragging = false; document.body.style.cursor = ""; document.body.style.userSelect = ""; }
+  });
+  // Touch support
+  divider.addEventListener("touchstart", (e) => {
+    const t = e.touches[0];
+    dragging = true; startY = t.clientY;
+    startCodeH = codePane.getBoundingClientRect().height;
+    startLogH  = logPane.getBoundingClientRect().height;
+  }, {passive:true});
+  window.addEventListener("touchmove", (e) => {
+    if (!dragging) return;
+    const t = e.touches[0];
+    const dy = t.clientY - startY;
+    const splitH = split.getBoundingClientRect().height - divider.getBoundingClientRect().height;
+    let newCode = startCodeH + dy;
+    const min = 100;
+    if (newCode < min) newCode = min;
+    if (newCode > splitH - min) newCode = splitH - min;
+    codePane.style.flex = `0 0 ${newCode}px`;
+    logPane.style.flex  = `0 0 ${splitH - newCode}px`;
+    if (_jobCm) _jobCm.refresh();
+  }, {passive:true});
+  window.addEventListener("touchend", () => { dragging = false; });
+}
+
+// ─── Job Details drawer ──────────────────────────────────────────────
+let _jdOpen = false;
+let _jdHealthTimer = null;
+let _jdTimeline = [];
+let _jdLogFollow = true;
+function openJobDetails(id) {
+  if (id) selectJob(id);
+  document.body.classList.add("rs-detail-open");
+  _jdOpen = true;
+  renderJobDetails();
+  _startHealthCheck();
+  // Lock background scroll on mobile (prevents double-scroll)
+  document.body.classList.add("rs-drawer-open");
+  // Reset drawer scroll to top so cards start at URL/Logs
+  const db = document.querySelector("#tab-jobs .rs-detail-body");
+  if (db) db.scrollTop = 0;
+  _jdLogFollow = true;
+}
+function closeJobDetails() {
+  document.body.classList.remove("rs-detail-open");
+  document.body.classList.remove("rs-drawer-open");
+  _jdOpen = false;
+  if (_jdHealthTimer) { clearInterval(_jdHealthTimer); _jdHealthTimer = null; }
+}
+function _jdSet(name, value) {
+  const el = document.getElementById(name);
+  if (el && value !== undefined) el.textContent = value;
+}
+function renderJobDetails() {
+  const job = (window._lastJobs||[]).find(x => String(x.id) === String(_selectedJobId));
+  if (!job) { closeJobDetails(); return; }
+  _jdSet("jdName", job.name || "untitled");
+  const l = document.getElementById("jdLang"); if (l) l.textContent = _langIcon(job.language);
+  const badge = document.getElementById("jdBadge");
+  const stKey = (job.status||"").toLowerCase();
+  if (badge) {
+    badge.className = "rs-badge " + (stKey==="running"?"running":stKey==="crashed"||stKey==="install_failed"?"crashed":stKey==="starting"||stKey==="installing"?"starting":"");
+    badge.textContent = _fmtStatus(job.status).label;
+  }
+  _jdSet("jdUptime", "up " + _fmtUptime(job.uptime_s||0));
+  _jdSet("jdRestarts", (job.restarts||0) + " restart" + (job.restarts===1?"":"s"));
+  // Mirror logs to drawer (auto-follow like main pane)
+  const src = document.getElementById("jobLogBody");
+  const dst = document.getElementById("jdLogBody");
+  if (src && dst) {
+    const wasBottom = dst.scrollTop + dst.clientHeight >= dst.scrollHeight - 24;
+    dst.innerHTML = src.innerHTML;
+    if (wasBottom || _jdLogFollow !== false) dst.scrollTop = dst.scrollHeight;
+  }
+  // URL card
+  const card = document.getElementById("jdUrlCard");
+  if (card) {
+    const isRunning = stKey === "running";
+    const url = job.web_url || job.url;
+    if (isRunning && url) {
+      card.style.display = "";
+      const a = document.getElementById("jdUrl"); if (a) { a.href = url; a.textContent = url; }
+      const o = document.getElementById("jdUrlOpen"); if (o) o.href = url;
+    } else {
+      card.style.display = "none";
+    }
+  }
+  // Resources (best-effort; runner returns what it has)
+  _jdSet("jdPid", job.pid || job.runner_job_id || "—");
+  _jdSet("jdPort", job.port || "—");
+  _jdSet("jdCpu", job.cpu_pct != null ? (job.cpu_pct.toFixed?.(1) ?? job.cpu_pct) + "%" : "—");
+  _jdSet("jdMem", job.mem_mb != null ? (Math.round(job.mem_mb)) + " MB" : "—");
+  // Timeline
+  const tl = document.getElementById("jdTimeline");
+  if (tl) {
+    if (!job._tl) job._tl = [];
+    // Append events on status changes
+    const last = job._tl[job._tl.length-1];
+    const evLabel = _fmtStatus(job.status).label;
+    if (!last || last.ev !== evLabel) {
+      job._tl.push({t: new Date(), ev: evLabel, cls: stKey==="running"?"ok":stKey==="crashed"||stKey==="install_failed"?"err":stKey==="starting"||stKey==="installing"?"warn":""});
+      if (job._tl.length > 30) job._tl.shift();
+    }
+    if (!job._tl.length) {
+      tl.innerHTML = '<li class="rs-empty-sm">Events will appear here.</li>';
+    } else {
+      tl.innerHTML = job._tl.slice().reverse().map(e => {
+        const t = e.t.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+        return '<li><span class="rs-ts">'+t+'</span><span class="rs-te '+e.cls+'">'+e.ev+'</span></li>';
+      }).join("");
+    }
+  }
+}
+function _startHealthCheck() {
+  if (_jdHealthTimer) clearInterval(_jdHealthTimer);
+  const tick = async () => {
+    if (!_jdOpen) return;
+    const job = (window._lastJobs||[]).find(x => String(x.id) === String(_selectedJobId));
+    const h = document.getElementById("jdHealth");
+    const sub = document.getElementById("jdHealthSub");
+    const url = job && (job.web_url || job.url);
+    if (!h || !sub || !url) return;
+    h.className = "rs-health";
+    h.querySelector(".rs-h-tx").textContent = "checking…";
+    const t0 = performance.now();
+    try {
+      const r = await fetch(url, {method:"GET", mode:"no-cors", cache:"no-store"});
+      const dt = Math.round(performance.now()-t0);
+      h.className = "rs-health ok";
+      h.querySelector(".rs-h-tx").textContent = "live ("+dt+"ms)";
+      sub.textContent = "Last checked: " + new Date().toLocaleTimeString();
+    } catch(e) {
+      h.className = "rs-health bad";
+      h.querySelector(".rs-h-tx").textContent = "unreachable";
+      sub.textContent = "Last checked: " + new Date().toLocaleTimeString();
+    }
+  };
+  tick();
+  _jdHealthTimer = setInterval(tick, 15000);
+}
+function _initDetailWiring() {
+  if (document.getElementById("btnJobDetails") && document.getElementById("btnJobDetails")._w) return;
+  const det = document.getElementById("btnJobDetails");
+  if (det) { det._w=1; det.addEventListener("click", e => { e.preventDefault(); e.stopPropagation(); openJobDetails(); }); }
+  const bk = document.getElementById("jobDetailBack");
+  if (bk) bk.addEventListener("click", e => { e.preventDefault(); e.stopPropagation(); closeJobDetails(); });
+  const stop = document.getElementById("jdStop");
+  if (stop) stop.addEventListener("click", e => { e.preventDefault(); e.stopPropagation(); if (_selectedJobId) stopJobById(_selectedJobId); });
+  const rst = document.getElementById("jdRestart");
+  if (rst) rst.addEventListener("click", e => { e.preventDefault(); e.stopPropagation(); if (_selectedJobId) restartJobById(_selectedJobId); });
+  const del = document.getElementById("jdDelete");
+  if (del) del.addEventListener("click", e => {
+    e.preventDefault(); e.stopPropagation();
+    if (!_selectedJobId) return;
+    if (!confirm("Delete this job? This cannot be undone.")) return;
+    deleteJobById(_selectedJobId, del); closeJobDetails();
+  });
+  const edit = document.getElementById("jdEditCode");
+  if (edit) edit.addEventListener("click", e => { e.preventDefault(); e.stopPropagation(); closeJobDetails(); _jobCmFocus(); });
+  const cp = document.getElementById("jdCopy");
+  if (cp) cp.addEventListener("click", e => {
+    e.preventDefault(); e.stopPropagation();
+    const b = document.getElementById("jdLogBody"); const t = b?b.textContent:"";
+    if (!navigator.clipboard) { toast("Clipboard not available","error"); return; }
+    if (!t) { toast("Nothing to copy","error"); return; }
+    navigator.clipboard.writeText(t).then(()=>{
+      cp.classList.add("is-ok");
+      toast("Logs copied ✓","success");
+      setTimeout(()=>cp.classList.remove("is-ok"),1200);
+    }).catch(()=>toast("Copy failed","error"));
+  });
+  const cl = document.getElementById("jdClear");
+  if (cl) cl.addEventListener("click", e => {
+    e.preventDefault(); e.stopPropagation();
+    const b = document.getElementById("jdLogBody"); if (b) b.innerHTML = '<span class="rs-log-empty">// Logs cleared.</span>';
+    const b2 = document.getElementById("jobLogBody"); if (b2) b2.innerHTML = '<span class="rs-log-empty">// Logs cleared.</span>';
+    toast("Logs cleared","info");
+  });
+  // Drawer logs auto-follow (mirror _logFollow for main pane)
+  const jdBody = document.getElementById("jdLogBody");
+  if (jdBody && !jdBody._w) {
+    jdBody._w = 1;
+    _jdLogFollow = true;
+    jdBody.addEventListener("scroll", () => {
+      _jdLogFollow = jdBody.scrollTop + jdBody.clientHeight >= jdBody.scrollHeight - 24;
+    }, {passive:true});
+  }
+  // Download split-button (Download ▾ → Source / Logs / Database)
+  const dlWrap = document.getElementById("jdDlWrap");
+  const dlMenu = document.getElementById("jdDlMenu");
+  const dlMain = document.getElementById("jdDl");
+  const dlCaret = document.getElementById("jdDlCaret");
+  const _closeDl = () => { if (dlWrap) dlWrap.classList.remove("open"); };
+  if (dlCaret) dlCaret.addEventListener("click", e => {
+    e.preventDefault(); e.stopPropagation();
+    if (!dlWrap) return;
+    dlWrap.classList.toggle("open");
+  });
+  if (dlMain) dlMain.addEventListener("click", e => {
+    e.preventDefault(); e.stopPropagation();
+    // Default: source code (most common action). Opens menu on first click if empty.
+    _dlSource();
+  });
+  document.addEventListener("click", (e) => {
+    if (dlWrap && !dlWrap.contains(e.target)) _closeDl();
+  });
+  // Close dropdown on scroll inside the drawer to avoid it floating over cards
+  const _dbody = document.querySelector("#tab-jobs .rs-detail-body");
+  if (_dbody) _dbody.addEventListener("scroll", _closeDl, {passive:true});
+  if (dlMenu) dlMenu.querySelectorAll(".rs-dl-item").forEach(item => {
+    item.addEventListener("click", (e) => {
+      e.preventDefault(); e.stopPropagation();
+      _closeDl();
+      const t = item.dataset.type;
+      if (t === "source") _dlSource();
+      else if (t === "logs") _dlLogs();
+      else if (t === "db") _dlDb();
+    });
+  });
+
+  function _dlSource() {
+    const job = (window._lastJobs||[]).find(x => String(x.id) === String(_selectedJobId));
+    const name = (document.getElementById("jobName")||{}).value || (job&&job.name) || "job";
+    const lang = (document.getElementById("jobLang")||{}).value || (job&&job.language) || "py";
+    const ext = {python:"py",javascript:"js",js:"js",bash:"sh",shell:"sh",sh:"sh",
+                 ruby:"rb",rb:"rb",php:"php",go:"go",rust:"rs",lua:"lua",
+                 perl:"pl",java:"java",typescript:"ts"}[lang.toLowerCase()] || "txt";
+    const code = _jobCmGetValue() || (job&&job.code) || "";
+    const blob = new Blob([code], {type:"text/x-python;charset=utf-8"});
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    let fname = (name||"source").replace(/[^\w.\-]+/g,"_");
+    if (fname.indexOf(".") === -1) fname += "." + ext;
+    a.download = fname; document.body.appendChild(a); a.click();
+    setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove();},200);
+    toast("Downloaded "+fname,"success");
+  }
+  function _dlLogs() {
+    const body = document.getElementById("jobLogBody");
+    const name = (document.getElementById("jobName")||{}).value || "job";
+    const text = body ? body.textContent : "";
+    if (!text || /logs will appear/i.test(text)) { toast("Logs are empty","error"); return; }
+    const blob = new Blob([text],{type:"text/plain;charset=utf-8"});
+    const a=document.createElement("a"); a.href=URL.createObjectURL(blob);
+    a.download = (name||"job").replace(/[^\w.\-]+/g,"_") + "-" + new Date().toISOString().slice(0,10) + ".log";
+    document.body.appendChild(a); a.click();
+    setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove();},200);
+    toast("Logs downloaded","success");
+  }
+  async function _dlDb() {
+    if (!_selectedJobId) { toast("Select a job first","error"); return; }
+    toast("Looking for database file…","info");
+    try {
+      const r = await api(`/api/jobs/${_selectedJobId}/files`, "GET", null, true);
+      const files = r.files || [];
+      if (!files.length) { toast("No database/data files found (job may not be running yet).","error"); return; }
+      const db = files.find(f => /\.(db|sqlite|sqlite3)$/i.test(f.path));
+      const json = files.find(f => /\.(json)$/i.test(f.path));
+      const pick = db || json || files[0];
+      const token = localStorage.getItem("ahad_token") || "";
+      const hr = await fetch(`/api/jobs/${_selectedJobId}/files/`+encodeURI(pick.path), {headers: token?{"Authorization":"Bearer "+token}:{}});
+      if (!hr.ok) throw new Error("Download failed ("+hr.status+")");
+      const blob = await hr.blob();
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = pick.path.split("/").pop() || "database.db";
+      document.body.appendChild(a); a.click();
+      setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove();},300);
+      toast("Downloaded "+a.download,"success");
+    } catch (err) { toast(err.message || "Download failed","error"); }
+  }
+  const uc = document.getElementById("jdUrlCopy");
+  if (uc) uc.addEventListener("click", e => {
+    e.preventDefault(); e.stopPropagation();
+    const a = document.getElementById("jdUrl"); if (!a || !a.href) return;
+    const u = a.href;
+    if (navigator.clipboard) navigator.clipboard.writeText(u).then(()=>toast("Link copied","success"));
+  });
+  const add = document.getElementById("jdEnvAdd");
+  if (add) add.addEventListener("click", e => {
+    e.preventDefault(); e.stopPropagation();
+    const list = document.getElementById("jdEnvList");
+    const row = document.createElement("div"); row.className = "rs-env-row";
+    row.innerHTML = '<input class="rs-env-k" placeholder="KEY" spellcheck="false"><input class="rs-env-v" placeholder="value" spellcheck="false"><button class="rs-icon-btn rs-tb" title="Remove"><svg viewBox="0 0 24" class="rs-ic-sm" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>';
+    list.appendChild(row);
+    if (list.querySelector(".rs-empty-sm")) list.querySelector(".rs-empty-sm").remove();
+    row.querySelector("button").addEventListener("click", ()=>row.remove());
   });
 }
 
+(function _waitBoot(){
+  if (document.readyState === "complete" || document.readyState === "interactive") {
+    setTimeout(_initWbWiring, 30);
+    setTimeout(_initDetailWiring, 40);
+  } else {
+    document.addEventListener("DOMContentLoaded", () => { setTimeout(_initWbWiring, 30); setTimeout(_initDetailWiring, 40); });
+  }
+})();
+
+// ─── Actions ──────────────────────────────────────────────────────────
 async function toggleJobAccess(id, makePublic) {
   try {
     const info = await api(`/api/jobs/${id}/access`, "POST", { public: makePublic }, true);
     if (info && info.web_private_url) {
-      toast("Private link ready — copied ✓", "success");
-      copyText(info.web_private_url);
+      toast("Private link copied ✓", "success"); copyText(info.web_private_url);
     } else {
-      toast(makePublic ? "App URL is now PUBLIC" : "App URL is now PRIVATE", "info");
+      toast(makePublic ? "Forge is now PUBLIC" : "Forge is now PRIVATE", "info");
     }
     loadJobs();
   } catch (e) { toast(e.message, "error"); }
 }
 
 async function startJob() {
-  const name = document.getElementById("jobName").value.trim();
+  const nameEl = document.getElementById("jobName");
+  let name = (nameEl && nameEl.value || "").trim();
   const language = document.getElementById("jobLang").value;
-  const code = document.getElementById("jobCode").value;
-  if (!name) { toast("Give the app a name!", "error"); return; }
-  if (!code.trim()) { toast("Paste some code first!", "error"); return; }
+  const code = _jobCmGetValue();
+  const repoUrl = ((document.getElementById("jobRepoUrl") || {}).value || "").trim();
+  if (!name && repoUrl) {
+    const m = repoUrl.match(/github\.com\/[^/]+\/([^/]+)/);
+    if (m) name = m[1].replace(/\.git$/,"");
+    if (nameEl && !nameEl.value.trim()) nameEl.value = name;
+  }
+  const finalName = (nameEl && nameEl.value || "").trim() || name;
+  if (nameEl) nameEl.value = finalName;
+  if (!finalName) { toast("Name required", "error"); if (nameEl) nameEl.focus(); return; }
+  if (!code.trim() && !repoUrl) { toast("Write code or paste a GitHub URL", "error"); return; }
+  // Client-side duplicate name guard (server enforces authoritatively)
+  if (window._lastJobs) {
+    const btn = document.getElementById("btnStartJob");
+    const editingId = btn && btn.dataset.editingId;
+    const dup = window._lastJobs.find(j => (j.name||"").toLowerCase() === finalName.toLowerCase() && String(j.id) !== String(editingId||""));
+    if (dup) {
+      toast("You already have a job named \u201c"+finalName+"\u201d \u2014 choose a different name.", "error");
+      _setHint("err", "duplicate name");
+      if (nameEl) { nameEl.focus(); nameEl.select(); }
+      return;
+    }
+  }
   const btn = document.getElementById("btnStartJob");
+  const editingId = btn && btn.dataset.editingId;
   setLoading(btn, true);
+  if (btn) {
+    btn.classList.add("is-firing","loading");
+    const lbl = btn.querySelector(".rs-btn-label");
+    btn._origLabel = lbl ? lbl.textContent : null;
+    if (lbl) lbl.textContent = editingId ? "Saving\u2026" : "Starting\u2026";
+  }
+  _setHint("warn", "");
   try {
-    const info = await api("/api/jobs", "POST", { name, language, code }, true);
-    toast("Deployed — running 24/7 now 🚀", "success");
-    document.getElementById("jobName").value = "";
-    document.getElementById("jobCode").value = "";
-    await loadJobs();
-    if (info && info.job_db_id) viewJobLogs(info.job_db_id, name);
+    const payload = { name: finalName, language, code };
+    if (repoUrl) payload.repo_url = repoUrl;
+    let info;
+    if (editingId) {
+      info = await api("/api/jobs/" + editingId, "PATCH", payload, true);
+    } else {
+      info = await api("/api/jobs", "POST", payload, true);
+    }
+    toast("Deployed \u2713", "success");
+    _setHint("ok", "");
+    _jobDirty = false;
+    // 👉 Optimistic UI update: insert the new job into _lastJobs immediately
+    // with status="starting" so sidebar + stats reflect the launch right away
+    // instead of waiting 7s for the next poll round. SSE will correct to
+    // "running"/"crashed" within 1.5s once it connects.
+    if (info && info.job_db_id) {
+      const stub = {
+        id: info.job_db_id,
+        name: finalName,
+        language: language,
+        runner_job_id: info.id,
+        status: "starting",
+        restarts: 0,
+        web: !!info.web,
+        web_url: info.web_url || null,
+        web_slug: info.web_slug || null,
+        web_public: info.web_public !== false,
+        code: code,
+      };
+      window._lastJobs = window._lastJobs || [];
+      // remove any prior stub with same id
+      window._lastJobs = window._lastJobs.filter(x => String(x.id) !== String(info.job_db_id));
+      window._lastJobs.unshift(stub);
+      _lastJobsSig = "";  // force renderJobs to repaint
+      renderJobs(window._lastJobs);
+      selectJob(info.job_db_id);
+      if (info.web_url) setTimeout(() => toast("Live URL ready \u2014 tap Details to open", "info"), 800);
+    } else {
+      await loadJobs();
+    }
+    // Always refresh the list in the background after 2.5s so the real status
+    // (running/installing/crashed) overtakes our optimistic stub.
+    setTimeout(() => { loadJobs().catch(()=>{}); }, 2500);
   } catch (e) {
     toast(e.message, "error");
+    _setHint("err", e.message);
   } finally {
     setLoading(btn, false);
+    if (btn) {
+      btn.classList.remove("is-firing","loading");
+      const lbl = btn.querySelector(".rs-btn-label");
+      if (lbl && btn._origLabel) lbl.textContent = btn._origLabel;
+      setTimeout(() => btn.classList.remove("is-firing"), 700);
+    }
   }
 }
 
 async function stopJobById(id) {
+  const btn = document.getElementById("btnStopJob");
+  const svg = btn && btn.querySelector(".rs-ic-sm");
   try {
-    await api(`/api/jobs/${id}/stop`, "POST", null, true);
-    toast("App stopped", "info");
+    if (svg) { svg.style.animation = "rsSpin .7s linear"; btn.disabled = true; }
+    await api("/api/jobs/" + id + "/stop", "POST", null, true);
+    toast("Stopped", "info");
+    const j = (window._lastJobs||[]).find(x => String(x.id) === String(id));
+    if (j) { j.status = "stopped"; _reflectJobStatus(j); }
     loadJobs();
-  } catch (e) { toast(e.message, "error"); }
+    if (String(_selectedJobId) === String(id)) restartLogStream(id);
+    setTimeout(() => { if (svg) { svg.style.animation = ""; btn.disabled = false; } }, 500);
+  } catch (e) {
+    if (svg) { svg.style.animation = ""; btn.disabled = false; }
+    toast(e.message, "error");
+  }
 }
-
 async function restartJobById(id) {
+  const btn = document.getElementById("btnRestartJob");
+  const svg = btn && btn.querySelector(".rs-ic-sm");
   try {
-    await api(`/api/jobs/${id}/restart`, "POST", null, true);
-    toast("App restarted 🚀", "success");
+    if (svg) { svg.style.animation = "rsSpin .7s linear"; }
+    await api("/api/jobs/" + id + "/restart", "POST", null, true);
+    toast("Restarted", "success");
+    const j = (window._lastJobs||[]).find(x => String(x.id) === String(id));
+    if (j) { j.status = "starting"; _reflectJobStatus(j); }
     loadJobs();
-  } catch (e) { toast(e.message, "error"); }
+    if (String(_selectedJobId) === String(id)) restartLogStream(id);
+    setTimeout(()=>{ if (svg) svg.style.animation=""; }, 720);
+  } catch (e) {
+    if (svg) svg.style.animation="";
+    toast(e.message, "error");
+  }
 }
-
 async function deleteJobById(id, btn) {
-  if (!confirm("Delete this app permanently?")) return;
   try {
-    await api(`/api/jobs/${id}`, "DELETE", null, true);
-    closeJobLogs();
-    toast("App deleted", "info");
-    await _rowOut(btn);
+    await api("/api/jobs/" + id, "DELETE", null, true);
+    if (String(_selectedJobId) === String(id)) deselectJob();
+    toast("Deleted", "info");
+    const row = btn && btn.closest && btn.closest(".job-item");
+    if (row) { row.classList.add("row-leave"); await new Promise(r => setTimeout(r, 180)); }
     loadJobs();
   } catch (e) { toast(e.message, "error"); }
 }
 
-let _jobLogTimer = null;
-let _jobLogES = null;
-let _logAutoScroll = true;
+function startJobPolling()  { loadJobs(); if (_jobsTimer) clearInterval(_jobsTimer); _jobsTimer = setInterval(loadJobs, 7000); }
+function stopJobPolling()   { if (_jobsTimer) { clearInterval(_jobsTimer); _jobsTimer = null; } }
 
-function _logBody() { return document.getElementById("jobLogBody"); }
-
-function _setLogFollow() {
-  const body = _logBody();
-  if (!body) return;
-  // Auto-scroll pauses while the user is scrolled up reading older lines,
-  // and resumes the moment they return to the very bottom.
-  _logAutoScroll = body.scrollTop + body.clientHeight >= body.scrollHeight - 40;
-}
-
-function _renderLogText(txt) {
-  const body = _logBody();
-  if (!body) return;
-  body.textContent = (txt && txt.trim()) ? txt + "\n" : "(no output yet)";
-  if (_logAutoScroll) body.scrollTop = body.scrollHeight;
-}
-
-async function viewJobLogs(id, name) {
-  _jobLogFor = { id, name };
-  document.getElementById("jobLogTitle").textContent = "📜 " + name;
-  document.getElementById("jobLogBox").style.display = "block";
-  _logAutoScroll = true;
-  _renderLogText("connecting…");
-  _openLogStream(id);
-  if (_jobLogTimer) { clearInterval(_jobLogTimer); _jobLogTimer = null; }
-}
-
-function _openLogStream(id) {
-  if (_jobLogES) { _jobLogES.close(); _jobLogES = null; }
-  try {
-    // Real-time logs over Server-Sent Events — lines appear as they happen,
-    // no refresh button needed.
-    const es = new EventSource(`/api/jobs/${id}/logs/stream?token=${encodeURIComponent(authToken || "")}`);
-    _jobLogES = es;
-    es.onmessage = (ev) => {
-      try { _renderLogText(JSON.parse(ev.data).logs); } catch (e) {}
-    };
-    es.onerror = () => {
-      // Stream blocked? Fall back to gentle polling so logs still move.
-      es.close();
-      if (_jobLogES === es) _jobLogES = null;
-      if (_jobLogFor && !_jobLogTimer) _jobLogTimer = setInterval(refreshJobLogs, 2500);
-    };
-  } catch (e) {
-    if (!_jobLogTimer) _jobLogTimer = setInterval(refreshJobLogs, 2500);
-  }
-}
-
-async function refreshJobLogs() {
-  if (!_jobLogFor) { if (_jobLogTimer) { clearInterval(_jobLogTimer); _jobLogTimer = null; } return; }
-  try {
-    const data = await api(`/api/jobs/${_jobLogFor.id}/logs`, "GET", null, true);
-    _renderLogText(data.logs);
-  } catch (e) {
-    _renderLogText("✗ " + e.message);
-  }
-}
-
-function copyJobLogs() {
-  const body = _logBody();
-  const btn = document.getElementById("jobLogCopy");
-  const text = body ? body.textContent : "";
-  const done = () => {
-    if (!btn) return;
-    btn.textContent = "Copied ✓";
-    setTimeout(() => { btn.textContent = "⧉ Copy"; }, 1400);
+// Refresh CM when switching TO the jobs tab (CM needs a refresh any time it
+// transitions from display:none to visible otherwise it paints blank).
+(function() {
+  const orig = window.switchTab;
+  window.switchTab = function(tabId) {
+    const r = orig.apply(this, arguments);
+    if (tabId === "jobs") {
+      // Force a fresh fetch immediately on tab entry (skeleton shows first,
+      // data fills in) — this makes the tab feel alive every time you come back.
+      _lastJobsTs = 0;
+      startJobPolling();
+      const cmRefresh = () => {
+        try {
+          initJobCodeMirror();
+          _jobCmRefresh();
+          // CM sometimes needs two rAFs to recalc after flex layout settles
+          requestAnimationFrame(() => requestAnimationFrame(_jobCmRefresh));
+        } catch(e){}
+      };
+      setTimeout(cmRefresh, 30);
+      setTimeout(cmRefresh, 200);   // safe double-tap after slide-in anim ends
+    }
+    return r;
   };
-  if (navigator.clipboard && navigator.clipboard.writeText) {
-    navigator.clipboard.writeText(text).then(done).catch(done);
-  } else {
-    const ta = document.createElement("textarea");
-    ta.value = text;
-    document.body.appendChild(ta);
-    ta.select();
-    try { document.execCommand("copy"); } catch (e) {}
-    ta.remove();
-    done();
-  }
-}
+})();
 
-function toggleFullLogs() {
-  const box = document.getElementById("jobLogBox");
-  if (!box) return;
-  box.classList.toggle("full");
-  const b = document.getElementById("jobLogFull");
-  if (b) b.textContent = box.classList.contains("full") ? "⤡ Exit" : "⤢ Full";
-}
-
-function closeJobLogs() {
-  if (_jobLogTimer) { clearInterval(_jobLogTimer); _jobLogTimer = null; }
-  if (_jobLogES) { _jobLogES.close(); _jobLogES = null; }
-  _jobLogFor = null;
-  const box = document.getElementById("jobLogBox");
-  if (box) { box.style.display = "none"; box.classList.remove("full"); }
-  const b = document.getElementById("jobLogFull");
-  if (b) b.textContent = "⤢ Full";
-}
-
-function startJobPolling() {
-  loadJobs();
-  if (_jobsTimer) clearInterval(_jobsTimer);
-  _jobsTimer = setInterval(loadJobs, 7000);
-}
-
-function stopJobPolling() {
-  if (_jobsTimer) { clearInterval(_jobsTimer); _jobsTimer = null; }
-}
-
+/* ==================== ADMIN CONSOLE (owner-only) ====================
+   The sidebar button stays hidden until /profile says is_admin. The server
+   answers 404 (not 403) for everybody else, so the panel's existence is
+   never leaked. Destructive actions re-ask the admin's OWN 2FA code. */
+/* ==================== ADMIN CONSOLE (owner-only) ====================
+   The sidebar button stays hidden until /profile says is_admin. The server
+   answers 404 (not 403) for everybody else, so the panel's existence is
+   never leaked. Destructive actions re-ask the admin's OWN 2FA code. */
 /* ==================== ADMIN CONSOLE (owner-only) ====================
    The sidebar button stays hidden until /profile says is_admin. The server
    answers 404 (not 403) for everybody else, so the panel's existence is
@@ -2742,4 +3837,266 @@ async function confirmAdminAction() {
 (function () {
   const box = document.getElementById("adminTfaCode");
   if (box) box.addEventListener("keydown", (e) => { if (e.key === "Enter") confirmAdminAction(); });
+})();
+
+// Code Studio full-bleed: toggle body class so CSS can strip dash-main padding
+(function(){
+  const origSwitch = window.switchTab;
+  if(!origSwitch) return;
+  window.switchTab = function(t){
+    document.body.classList.toggle('code-active', t === 'code');
+    return origSwitch.apply(this, arguments);
+  };
+})();
+
+/* ---------- Code Studio: explorer / terminal / status wiring ---------- */
+(function(){
+  function csReady(){
+    var studio = document.getElementById('tab-code');
+    if(!studio) return false;
+    var root = studio;
+    function $(id){ return document.getElementById(id); }
+    var codeEl = $('snippetContent');
+    var titleEl = $('snippetTitle');
+    var langEl = $('snippetLanguage');
+    var expBtn = $('btnExplorer');
+    var termTgl = $('btnToggleTerm');
+    var termAct = $('btnTermActivity');
+    var ahClose = $('ahTermClose');
+
+    // Explorer toggle
+    if(expBtn){
+      expBtn.addEventListener('click', function(){
+        root.classList.toggle('explorer-open');
+        expBtn.classList.toggle('active', root.classList.contains('explorer-open'));
+        if(termAct) termAct.classList.remove('active');
+        setTimeout(function(){ if(window._cmEditor) window._cmEditor.refresh(); }, 220);
+      });
+      // Default open on desktop
+      if(window.innerWidth > 900) {
+        root.classList.add('explorer-open');
+        expBtn.classList.add('active');
+      }
+    }
+    // Terminal toggle
+    function toggleTerm(force){
+      var isOpen = root.classList.contains('term-open');
+      if(typeof force === 'boolean') isOpen = !force;
+      if(isOpen){ root.classList.remove('term-open'); if(termTgl)termTgl.classList.remove('active'); if(termAct)termAct.classList.remove('active'); }
+      else { root.classList.add('term-open'); if(termTgl)termTgl.classList.add('active'); if(termAct)termAct.classList.add('active'); }
+    }
+    if(termTgl) termTgl.addEventListener('click', function(){ toggleTerm(); });
+    if(termAct) termAct.addEventListener('click', function(){
+      root.classList.remove('explorer-open');
+      if(expBtn) expBtn.classList.remove('active');
+      toggleTerm(true);
+    });
+    if(ahClose) ahClose.addEventListener('click', function(){ toggleTerm(true); });
+
+    // Auto-open terminal when Run pressed (defer until Run is wired)
+    document.addEventListener('click', function(e){
+      var t = e.target.closest('#btnRunCode');
+      if(t) { if(!root.classList.contains('term-open')) toggleTerm(); }
+    });
+
+    // Status bar: Ln/Col
+    function updateCursor(){
+      var ln = $('csStatusLn');
+      var ln2 = $('csStatusLang');
+      if(ln2 && langEl) ln2.textContent = (langEl.options[langEl.selectedIndex]||{}).textContent || 'Plaintext';
+      if(!ln) return;
+      if(window._cmEditor){
+        var c = window._cmEditor.getCursor();
+        ln.textContent = 'Ln '+(c.line+1)+', Col '+(c.ch+1);
+      } else if(codeEl && document.activeElement===codeEl) {
+        var v = codeEl.value.substring(0, codeEl.selectionStart);
+        var line = v.split('\n').length;
+        var col = v.length - v.lastIndexOf('\n');
+        ln.textContent = 'Ln '+line+', Col '+col;
+      }
+    }
+    setInterval(updateCursor, 250);
+
+    // Ctrl+B = explorer, Ctrl+` = terminal, Esc close preview/term
+    document.addEventListener('keydown', function(e){
+      if(!document.body.classList.contains('code-active')) return;
+      if((e.ctrlKey||e.metaKey) && e.key==='b' && !e.shiftKey && !e.altKey){ e.preventDefault(); if(expBtn) expBtn.click(); }
+      if(e.key==='`' && !e.ctrlKey && !e.metaKey && !e.shiftKey && document.activeElement!==codeEl && (!window._cmEditor || !window._cmEditor.hasFocus())) { e.preventDefault(); toggleTerm(); }
+      if(e.key==='Escape'){
+        if(root.classList.contains('term-open')) { root.classList.remove('term-open'); if(termTgl)termTgl.classList.remove('active'); if(termAct)termAct.classList.remove('active'); }
+      }
+    });
+    return true;
+  }
+  if(!csReady()){
+    var iv = setInterval(function(){ if(csReady()) clearInterval(iv); }, 150);
+  }
+})();
+
+// Copy current editor content
+(function(){
+  var b = document.getElementById("btnCopySnippet");
+  if(b) b.addEventListener("click", async function(){
+    try {
+      var c = window.cmEditor ? window.cmEditor.getValue() : (document.getElementById("snippetContent")||{}).value || "";
+      if(!c){ toast("Nothing to copy", "error"); return; }
+      await navigator.clipboard.writeText(c);
+      toast("Code copied to clipboard", "success");
+    } catch(e){ toast("Copy failed", "error"); }
+  });
+  var d = document.getElementById("btnDownloadSnippet");
+  if(d) d.addEventListener("click", function(){
+    var c = window.cmEditor ? window.cmEditor.getValue() : (document.getElementById("snippetContent")||{}).value || "";
+    var t = ((document.getElementById("snippetTitle")||{}).value||"untitled").trim();
+    var lang = (document.getElementById("snippetLanguage")||{}).value||"txt";
+    var ext = {html:"html",css:"css",javascript:"js",typescript:"ts",python:"py",markdown:"md",bash:"sh",text:"txt",json:"json",sql:"sql",java:"java",cpp:"cpp",c:"c",go:"go",php:"php",ruby:"rb"}[lang]||"txt";
+    var fname = t + (t.indexOf('.')===-1 ? '.'+ext : '');
+    var blob = new Blob([c], {type:"text/plain;charset=utf-8"});
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = fname;
+    document.body.appendChild(a); a.click();
+    setTimeout(function(){ URL.revokeObjectURL(a.href); a.remove(); }, 100);
+    toast("Downloaded "+fname, "success");
+  });
+  // Capture username for pretty @url
+  try {
+    var n = document.getElementById("dashUsername");
+    if(n && n.textContent) window.__user = n.textContent.trim();
+    var n2 = document.getElementById("dashUsername2");
+    if(n2 && n2.textContent && !window.__user) window.__user = n2.textContent.trim();
+  } catch(e){}
+})();
+
+/* ---------- RunSpace/Code/Terminal body class scoping ---------- */
+(function(){
+  function hook(){
+    if(!window.switchTab){ setTimeout(hook,50); return; }
+    var orig = window.switchTab;
+    window.switchTab = function(t){
+      var r = orig.apply(this,arguments);
+      document.body.classList.toggle('rs-active', t==='jobs');
+      document.body.classList.toggle('code-active', t==='code');
+      document.body.classList.toggle('term-active', t==='term');
+      // Always close drawer/log-toggle when leaving jobs
+      if (t !== 'jobs') {
+        document.body.classList.remove('rs-side-open','rs-logs-open');
+      }
+      return r;
+    };
+  }
+  hook();
+})();
+
+/* Files popover (Apple-glass) — replaces sidebar on desktop, always on mobile */
+(function(){
+  var pop = null;
+  function closePop(){
+    if(pop){ pop.remove(); pop = null; }
+    document.querySelectorAll('#btnExplorer').forEach(b=>b.classList.remove('active'));
+  }
+  function openPop(){
+    if(pop) { closePop(); return; }
+    var btn = document.getElementById('btnExplorer');
+    if(!btn) return;
+    var list = document.getElementById('snippetsList');
+    pop = document.createElement('div');
+    pop.className = 'cs-files-pop';
+    // Build items from current snippetsList
+    var items = list ? list.querySelectorAll('.snippet-item') : [];
+    var html = '<div class="cs-fp-head">Files<span class="cs-fp-count">'+items.length+'</span></div>';
+    html += '<button class="cs-fp-item" data-action="new" style="color:#3fb950"><span>+</span><span class="cs-fpi-name">New file…</span></button>';
+    items.forEach(function(it){
+      var id = it.dataset.id;
+      var name = it.querySelector('h4');
+      var isPub = it.classList.contains('published');
+      if(name) html += '<div class="cs-fp-item'+(isPub?' is-pub':'')+'" data-id="'+id+'"><span style="font-size:12px">📄</span><span class="cs-fpi-name">'+name.textContent+'</span><span class="cs-fpi-act"><button class="dl" title="Download" data-dl="'+id+'"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg></button></span></div>';
+    });
+    pop.innerHTML = html;
+    document.getElementById('tab-code').appendChild(pop);
+    btn.classList.add('active');
+    // Actions
+    pop.querySelectorAll('[data-id]').forEach(function(el){
+      el.addEventListener('click', function(e){
+        if(e.target.closest('button[data-dl]')) return;
+        loadSnippetIntoEditor(+el.dataset.id);
+        closePop();
+      });
+    });
+    pop.querySelector('[data-action=new]').addEventListener('click', function(){
+      if(typeof newSnippetDraft==='function') newSnippetDraft();
+      closePop();
+    });
+    pop.querySelectorAll('button[data-dl]').forEach(function(b){
+      b.addEventListener('click', function(e){
+        e.stopPropagation();
+        (async function(){
+          var id = +b.dataset.dl;
+          try {
+            var data = await api('/snippets','GET',null,true);
+            var s = (data.snippets||[]).find(x=>x.id===id); if(!s) return;
+            var ext = ({html:'html',css:'css',javascript:'js',typescript:'ts',python:'py',markdown:'md',bash:'sh',text:'txt',json:'json'}[s.language])||'txt';
+            var fname = s.title + (s.title.indexOf('.')===-1?'.'+ext:'');
+            var blob = new Blob([s.content||''],{type:'text/plain;charset=utf-8'});
+            var a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=fname;
+            document.body.appendChild(a); a.click(); setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove();},100);
+            toast('Downloaded '+fname,'success');
+          } catch(err){ toast(err.message,'error'); }
+        })();
+      });
+    });
+    setTimeout(function(){
+      document.addEventListener('click', onDoc, {once:true});
+    }, 50);
+  }
+  function onDoc(e){
+    if(pop && !pop.contains(e.target) && e.target.id!=='btnExplorer' && !e.target.closest('#btnExplorer')) closePop();
+  }
+  document.addEventListener('click', function(e){
+    var b = e.target.closest('#btnExplorer');
+    if(b) { e.preventDefault(); e.stopPropagation(); openPop(); }
+  });
+  // Move the sidebar to be a companion hidden store for snippetsList — we render from there into popover
+  // Keep original list rendering so loadSnippets() still works
+})();
+
+// ── RunSpace extra wiring (Clear / Download / mobile log toggle) ──
+(function(){
+  var _wired = false;
+  function wire(){
+    if(_wired) return;
+    if(!document.getElementById('tab-jobs')) return;
+    var clr = document.getElementById('jobLogClear');
+    if(clr) clr.addEventListener('click', function(){
+      var body = document.getElementById('jobLogBody');
+      if(body) body.innerHTML = '<span class="rs-log-empty">// Logs cleared.</span>';
+    });
+    var dl = document.getElementById('jobLogDl');
+    if(dl) dl.addEventListener('click', function(){
+      var body = document.getElementById('jobLogBody');
+      var name = (document.getElementById('jobName')||{}).value || 'job';
+      var text = body ? body.textContent : '';
+      if(!text){ toast('Logs are empty','error'); return; }
+      var blob = new Blob([text],{type:'text/plain;charset=utf-8'});
+      var a=document.createElement('a'); a.href=URL.createObjectURL(blob);
+      a.download = name+'-'+new Date().toISOString().slice(0,10)+'.log';
+      document.body.appendChild(a); a.click();
+      setTimeout(function(){URL.revokeObjectURL(a.href);a.remove();},100);
+      toast('Logs downloaded','success');
+    });
+    _wired = true;
+  }
+  if(document.readyState === 'complete' || document.readyState === 'interactive') setTimeout(wire, 40);
+  else document.addEventListener('DOMContentLoaded', function(){ setTimeout(wire, 40); });
+
+  // Mobile: tap log header to toggle logs panel
+  document.addEventListener('click', function(e){
+    if(window.innerWidth > 760) return;
+    if(e.target.closest('.rs-log-head')) {
+      document.body.classList.toggle('rs-logs-open');
+      // CodeMirror needs a refresh after the flex transition, otherwise it paints
+      // blank/chopped until the next keystroke.
+      setTimeout(function(){ try { if(_jobCm) _jobCm.refresh(); } catch(e){} }, 240);
+    }
+  });
 })();

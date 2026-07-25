@@ -1,0 +1,866 @@
+/* ============================================================
+   CODENEST · RUNSPACE — Replit / VS Code / Codespaces style IDE
+   Three-panel: sidebar | editor+logs split. No decorative chrome.
+   Scoped under #tab-jobs.
+   ============================================================ */
+
+/* Tab switch animation for RunSpace specifically — dash-tab-content.active
+   sets display:block but we need flex; so opt into the same keyframes. */
+@keyframes rsTabIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+#tab-jobs.active {
+  display: flex !important;
+  flex-direction: column !important;
+  animation: rsTabIn .26s cubic-bezier(.2,.7,.2,1) both;
+}
+/* Sidebar slide-in when switching TO RunSpace */
+#tab-jobs.active .rs-side { animation: rsSlideIn .28s cubic-bezier(.2,.7,.2,1) both; animation-delay: 40ms; }
+#tab-jobs.active .rs-main { animation: rsFadeIn .28s cubic-bezier(.2,.7,.2,1) both; animation-delay: 80ms; }
+#tab-jobs.active .rs-bar  { animation: rsFadeIn .22s ease both; }
+/* Jobs list staggers */
+#tab-jobs.active .job-item { animation: rsSlideIn .24s cubic-bezier(.2,.7,.2,1) both; }
+#tab-jobs.active .job-item:nth-child(1)  { animation-delay: 120ms; }
+#tab-jobs.active .job-item:nth-child(2)  { animation-delay: 140ms; }
+#tab-jobs.active .job-item:nth-child(3)  { animation-delay: 160ms; }
+#tab-jobs.active .job-item:nth-child(4)  { animation-delay: 180ms; }
+#tab-jobs.active .job-item:nth-child(5)  { animation-delay: 200ms; }
+#tab-jobs.active .job-item:nth-child(n+6) { animation-delay: 220ms; }
+/* Empty state fade */
+#tab-jobs.active .rs-empty { animation: rsFadeIn .32s ease both; animation-delay: 100ms; }
+
+body.rs-active .dash-main {
+  padding: 0 !important;
+  overflow: hidden !important;
+  display: flex !important;
+  flex-direction: column !important;
+}
+body.rs-active .dash-tab-content:not(#tab-jobs):not(.term-page) { display: none !important; }
+
+#tab-jobs {
+  background: #0d1117 !important;
+  color: #c9d1d9 !important;
+  display: none !important;
+  flex-direction: column !important;
+  height: 100% !important;
+  overflow: hidden !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  max-width: none !important;
+  width: 100% !important;
+  border-radius: 0 !important;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif !important;
+  font-size: 13px !important;
+  line-height: 1.4 !important;
+  box-sizing: border-box !important;
+  /* Smooth scrolling — GPU-composited, no jank */
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  scroll-behavior: smooth;
+  /* Hint the GPU to keep this layer composited */
+  transform: translateZ(0);
+  will-change: transform;
+  contain: layout paint;
+}
+body.rs-active #tab-jobs { display: flex !important; flex: 1 1 auto !important; min-height: 0 !important; }
+#tab-jobs *, #tab-jobs *::before, #tab-jobs *::after {
+  box-sizing: border-box !important;
+  font-family: inherit !important;
+}
+/* DON'T globally kill border-radius / box-shadow — it breaks button styles,
+   focus rings, toast badges and disables compositor layers (causing scroll
+   jank). Reset only the legacy elements that needed the old scoping. */
+
+/* ───────── Top bar ───────── */
+#tab-jobs .rs-bar {
+  flex: 0 0 42px !important;
+  height: 42px !important;
+  padding: 0 10px !important;
+  background: #161b22 !important;
+  border-bottom: 1px solid #21262d !important;
+  display: flex !important;
+  align-items: center !important;
+  gap: 12px !important;
+}
+#tab-jobs .rs-title {
+  flex: 1;
+  font-size: 13px !important;
+  font-weight: 600 !important;
+  color: #c9d1d9 !important;
+  letter-spacing: .01em !important;
+}
+#tab-jobs .rs-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+#tab-jobs .rs-text-btn {
+  background: transparent; border: 1px solid #30363d;
+  color: #c9d1d9; font-size: 12px; padding: 5px 11px;
+  border-radius: 6px !important; cursor: pointer; height: 28px;
+  display: inline-flex; align-items: center; justify-content: center;
+  gap: 6px; font-weight: 500; line-height: 1; white-space: nowrap;
+  flex-shrink: 0;
+}
+#tab-jobs .rs-text-btn:hover { background: #21262d; border-color: #484f58; color: #e6edf3; }
+#tab-jobs .rs-text-btn svg,
+#tab-jobs .rs-text-btn .rs-ic-sm {
+  display: inline-block !important; width: 13px !important; height: 13px !important;
+  flex-shrink: 0; overflow: visible; vertical-align: middle;
+  margin: 0; position: relative; top: 0;
+}
+#tab-jobs .rs-status-dot {
+  width: 8px; height: 8px; border-radius: 50% !important;
+  background: #30363d; flex-shrink: 0;
+}
+#tab-jobs .rs-status-dot.ok { background: #3fb950; box-shadow: 0 0 0 2px rgba(63,185,80,.15) !important; }
+#tab-jobs .rs-status-dot.bad { background: #f85149; }
+
+/* ───────── Shared button/input styles ───────── */
+#tab-jobs .rs-icon-btn {
+  background: transparent; border: none; color: #7d8590;
+  width: 28px; height: 28px; padding: 0;
+  border-radius: 4px !important; cursor: pointer;
+  display: grid; place-items: center; flex-shrink: 0;
+}
+#tab-jobs .rs-icon-btn:hover { background: #21262d; color: #e6edf3; }
+#tab-jobs .rs-icon-btn.rs-tb { width: 28px; height: 28px; }
+#tab-jobs .rs-ic, #tab-jobs .rs-ic-sm {
+  display: block;
+  flex-shrink: 0;
+  overflow: visible;
+}
+#tab-jobs .rs-ic { width: 16px; height: 16px; }
+#tab-jobs .rs-ic-sm { width: 14px; height: 14px; }
+
+/* ───────── Body = sidebar + main ───────── */
+#tab-jobs .rs-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: row;
+  background: #0d1117;
+  position: relative;
+}
+/* Sidebar */
+#tab-jobs .rs-side {
+  flex: 0 0 250px;
+  width: 250px;
+  background: #0d1117;
+  border-right: 1px solid #21262d;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  transition: width .2s ease, flex-basis .2s ease;
+}
+#tab-jobs .rs-side-head {
+  flex: 0 0 30px; height: 30px;
+  padding: 0 12px;
+  display: flex; align-items: center; gap: 8px;
+  background: #161b22;
+  border-bottom: 1px solid #21262d;
+}
+#tab-jobs .rs-side-title {
+  font-size: 10.5px; font-weight: 700;
+  color: #7d8590; letter-spacing: .05em; text-transform: uppercase;
+}
+#tab-jobs .rs-count {
+  background: #21262d; color: #7d8590;
+  font-size: 10px; padding: 1px 6px;
+  border-radius: 10px !important; font-weight: 600; margin-left: auto;
+}
+#tab-jobs .rs-new-btn {
+  flex: 0 0 30px; height: 30px;
+  padding: 0 12px;
+  background: transparent; border: none;
+  border-bottom: 1px solid #21262d;
+  color: #3fb950; font-size: 12px; font-weight: 500;
+  cursor: pointer; display: flex; align-items: center; gap: 6px;
+  text-align: left;
+}
+#tab-jobs .rs-new-btn:hover { background: #161b22; color: #56d364; }
+#tab-jobs .rs-list {
+  flex: 1 1 auto; overflow-y: auto; padding: 4px 0;
+}
+#tab-jobs .rs-list::-webkit-scrollbar { width: 10px; }
+#tab-jobs .rs-list::-webkit-scrollbar-thumb { background: transparent; border: 3px solid transparent; border-radius: 10px; background-clip: padding-box; }
+#tab-jobs .rs-list:hover::-webkit-scrollbar-thumb { background: #30363d; background-clip: padding-box; }
+@media (hover: none) {
+  /* Touch devices: always show a faint scrollbar (users can't hover to reveal) */
+  #tab-jobs .rs-list::-webkit-scrollbar-thumb { background: #21262d; background-clip: padding-box; }
+  #tab-jobs .rs-log-body::-webkit-scrollbar-thumb { background: #21262d; background-clip: padding-box; }
+  #tab-jobs .rs-detail-body::-webkit-scrollbar-thumb { background: #21262d; background-clip: padding-box; }
+}
+
+/* Job row */
+#tab-jobs .job-item {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  padding: 4px 10px !important;
+  padding-right: 28px !important;
+  min-height: 28px !important;
+  cursor: pointer !important;
+  color: #c9d1d9 !important;
+  font-size: 13px !important;
+  position: relative !important;
+  background: transparent !important;
+  border: none !important;
+  border-radius: 0 !important;
+  margin: 0 !important;
+  box-shadow: none !important;
+  transition: background .1s ease !important;
+}
+#tab-jobs .job-item:hover { background: #161b22 !important; }
+#tab-jobs .job-item.active { background: rgba(56,139,253,.12) !important; }
+#tab-jobs .job-item.active .jname { color: #58a6ff; font-weight: 500; }
+#tab-jobs .job-item .jlang-icon {
+  width: 18px; height: 18px; flex-shrink: 0;
+  display: grid; place-items: center;
+  font-family: ui-monospace, monospace; font-size: 9.5px;
+  font-weight: 700; color: #7d8590;
+  text-transform: lowercase;
+}
+#tab-jobs .job-item.running .jlang-icon { color: #3fb950; }
+#tab-jobs .job-item.crashed .jlang-icon { color: #f85149; }
+#tab-jobs .job-item .jname {
+  flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  font-family: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, Consolas, monospace;
+  font-size: 12.5px;
+}
+#tab-jobs .job-item .jstatus-dot {
+  width: 6px; height: 6px; border-radius: 50% !important;
+  background: #484f58; flex-shrink: 0;
+  transition: background .15s ease;
+}
+#tab-jobs .job-item.running .jstatus-dot { background: #3fb950; animation: rsPulse 1.8s ease-in-out infinite; }
+#tab-jobs .job-item.crashed .jstatus-dot { background: #f85149; }
+#tab-jobs .job-item.starting .jstatus-dot,
+#tab-jobs .job-item.installing .jstatus-dot { background: #d29922; animation: rsPulse 1.2s ease-in-out infinite; }
+#tab-jobs .job-item .jdel {
+  position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+  background: transparent; border: none; color: #7d8590;
+  width: 22px; height: 22px; padding: 0;
+  border-radius: 3px !important; cursor: pointer;
+  font-size: 14px; line-height: 1; display: none;
+  place-items: center;
+}
+#tab-jobs .job-item .jdel .rs-ic-sm { width: 13px; height: 13px; }
+#tab-jobs .job-item:hover .jdel { display: grid; }
+#tab-jobs .job-item .jdel:hover { background: rgba(248,81,73,.15); color: #f85149; }
+@keyframes rsPulse { 0%,100% { opacity: 1 } 50% { opacity: .45 } }
+/* Delete row animation */
+#tab-jobs .job-item.row-leave { opacity: 0; transform: translateX(-6px); transition: opacity .18s ease, transform .18s ease; pointer-events: none; }
+
+/* ───────── Main area ───────── */
+#tab-jobs .rs-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  background: #0d1117;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  overflow: hidden;
+}
+/* Empty state */
+#tab-jobs .rs-empty {
+  flex: 1 1 auto;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  gap: 10px; padding: 40px 24px;
+  color: #7d8590;
+  text-align: center;
+}
+#tab-jobs .rs-empty-ic { margin-bottom: 6px; opacity: .8; }
+#tab-jobs .rs-empty-title { font-size: 14px; font-weight: 600; color: #c9d1d9; }
+#tab-jobs .rs-empty-sub { font-size: 12.5px; color: #7d8590; max-width: 280px; line-height: 1.5; }
+#tab-jobs .rs-empty-btn {
+  margin-top: 12px;
+  background: #238636; border: 1px solid #238636;
+  color: #fff; font-size: 12.5px; font-weight: 600;
+  padding: 6px 14px; border-radius: 6px !important;
+  cursor: pointer; display: inline-flex; align-items: center; gap: 6px;
+}
+#tab-jobs .rs-empty-btn:hover { background: #2ea043; border-color: #2ea043; }
+
+/* ───────── Workspace ───────── */
+#tab-jobs .rs-ws { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+/* Editor sub-toolbar */
+#tab-jobs .rs-ed-bar {
+  flex: 0 0 34px; height: 34px;
+  padding: 0 8px;
+  background: #161b22;
+  border-bottom: 1px solid #21262d;
+  display: flex; align-items: center; gap: 6px;
+}
+#tab-jobs .rs-ed-group { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; }
+#tab-jobs .rs-ed-actions { display: flex; gap: 2px; flex-shrink: 0; }
+#tab-jobs .rs-inp {
+  height: 24px;
+  background: #0d1117; border: 1px solid #30363d;
+  color: #e6edf3; font-family: ui-monospace, monospace;
+  font-size: 12.5px; padding: 0 8px;
+  border-radius: 4px !important; outline: none;
+}
+#tab-jobs .rs-inp:hover { border-color: #484f58; }
+#tab-jobs .rs-inp:focus { border-color: #388bfd; box-shadow: 0 0 0 2px rgba(56,139,253,.2) !important; }
+#tab-jobs .rs-inp::placeholder { color: #6e7681; font-style: italic; }
+#tab-jobs .rs-sel {
+  height: 24px;
+  background: transparent; border: 1px solid transparent;
+  color: #7d8590; font-family: ui-monospace, monospace;
+  font-size: 11px; padding: 0 6px;
+  border-radius: 4px !important; outline: none; cursor: pointer;
+  font-weight: 500; text-transform: uppercase !important; letter-spacing: .03em !important;
+}
+#tab-jobs .rs-sel:hover { background: #21262d; color: #e6edf3; border-color: #30363d; }
+#tab-jobs .rs-gh {
+  flex: 1; min-width: 0; font-size: 11.5px !important; color: #6e7681;
+}
+/* Primary Run button — green filled play icon + label */
+#tab-jobs .rs-run-btn {
+  position: relative;
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 24px; padding: 0 10px;
+  background: #238636; color: #fff; border: 1px solid #238636;
+  border-radius: 4px !important; cursor: pointer;
+  font-size: 12px; font-weight: 600; letter-spacing: .01em;
+  transition: background .12s ease;
+}
+#tab-jobs .rs-run-btn:hover { background: #2ea043; border-color: #2ea043; }
+#tab-jobs .rs-run-btn.loading,
+#tab-jobs .rs-run-btn:disabled { opacity: .75; pointer-events: none; }
+#tab-jobs .rs-run-btn .rs-btn-label { line-height: 1; }
+#tab-jobs .rs-run-btn .rs-run-ic { display: inline-flex; }
+#tab-jobs .rs-run-btn .rs-run-ic .rs-ic-sm { width: 9px; height: 9px; color: #fff; flex-shrink: 0; }
+#tab-jobs .rs-run-btn .rs-spin {
+  width: 12px; height: 12px; border-radius: 50% !important;
+  border: 2px solid rgba(255,255,255,.35);
+  border-top-color: #fff;
+  animation: rsSpin .7s linear infinite;
+  flex-shrink: 0;
+}
+#tab-jobs .rs-run-btn.loading .rs-run-ic { display: none; }
+#tab-jobs .rs-run-btn .rs-spin { display: none; }
+#tab-jobs .rs-run-btn.loading .rs-spin { display: block; }
+/* Dirty state: code changed since last deploy — Run gets a soft accent.
+   No bounce/glow, just a slightly thicker border + label text change via JS. */
+#tab-jobs .rs-run-btn.dirty {
+  background: #2ea043;
+  border-color: #3fb950;
+}
+#tab-jobs .rs-run-btn.dirty:hover { background: #3fb950; }
+#tab-jobs #btnStopJob { color: #f85149; }
+#tab-jobs #btnStopJob:hover { background: rgba(248,81,73,.12); color: #ff7b72; }
+#tab-jobs #btnRestartJob { color: #d29922; }
+#tab-jobs #btnRestartJob:hover { background: rgba(210,153,34,.12); color: #e3b341; }
+#tab-jobs [data-rocket] .i-flame { opacity: 0; transition: opacity .18s ease; }
+#tab-jobs [data-rocket]:hover .i-flame,
+#tab-jobs [data-rocket].loading .i-flame,
+#tab-jobs [data-rocket].is-firing .i-flame { opacity: 1; animation: rs-flame .6s ease-in-out infinite; }
+#tab-jobs [data-rocket]:hover .rs-ic-sm { transform: translateY(-1.5px); transition: transform .2s cubic-bezier(.2,.7,.2,1); }
+#tab-jobs [data-rocket].loading .rs-ic-sm { transform: translateY(-3px); }
+@keyframes rs-flame { 0%,100%{transform:translateY(0) scaleY(1)} 50%{transform:translateY(1.5px) scaleY(1.35)} }
+
+/* Split: editor (flex:1.2) + logs (flex:0.8) */
+#tab-jobs .rs-split {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: #0d1117;
+}
+#tab-jobs .rs-pane {
+  display: flex; flex-direction: column;
+  min-height: 0; overflow: hidden;
+}
+#tab-jobs .rs-editor { flex: 1 1 60%; }
+#tab-jobs .rs-divider {
+  flex: 0 0 4px;
+  height: 4px;
+  background: #161b22;
+  border-top: 1px solid #21262d;
+  border-bottom: 1px solid #21262d;
+  cursor: ns-resize;
+  position: relative;
+}
+#tab-jobs .rs-divider:hover { background: #30363d; }
+#tab-jobs .rs-logs { flex: 0 0 180px; height: 180px; background: #010409; }
+
+/* Editor */
+#tab-jobs .rs-cm-host {
+  flex: 1 1 auto; position: relative; overflow: hidden;
+}
+#tab-jobs .rs-cm-host .CodeMirror {
+  position: absolute !important; inset: 0 !important;
+  width: 100% !important; height: 100% !important;
+  background: #0d1117 !important;
+  color: #c9d1d9 !important;
+  font-family: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, Consolas, monospace !important;
+  font-size: 14px !important;
+  line-height: 1.55 !important;
+  padding: 8px 0 !important;
+}
+#tab-jobs .rs-cm-host .CodeMirror-gutters {
+  background: #0d1117 !important;
+  border-right: 1px solid #1d252f !important;
+  padding-right: 2px;
+}
+#tab-jobs .rs-cm-host .CodeMirror-linenumber {
+  color: #484f58 !important;
+  padding: 0 8px !important;
+  font-size: 12px !important;
+  user-select: none !important;
+}
+#tab-jobs .rs-cm-host .CodeMirror-cursor { border-left: 2px solid #58a6ff !important; }
+#tab-jobs .rs-cm-host .CodeMirror-selected { background: rgba(56,139,253,.25) !important; }
+#tab-jobs .rs-cm-host .CodeMirror-focused .CodeMirror-selected { background: rgba(56,139,253,.35) !important; }
+#tab-jobs .rs-cm-host .CodeMirror-activeline-background { background: rgba(255,255,255,.03) !important; }
+/* Syntax (GitHub dark) */
+#tab-jobs .rs-cm-host .cm-keyword { color: #ff7b72 !important; font-weight: normal !important; }
+#tab-jobs .rs-cm-host .cm-atom, #tab-jobs .rs-cm-host .cm-number { color: #79c0ff !important; }
+#tab-jobs .rs-cm-host .cm-def { color: #d2a8ff !important; }
+#tab-jobs .rs-cm-host .cm-variable, #tab-jobs .rs-cm-host .cm-variable-2 { color: #c9d1d9 !important; }
+#tab-jobs .rs-cm-host .cm-property { color: #79c0ff !important; }
+#tab-jobs .rs-cm-host .cm-comment { color: #8b949e !important; font-style: normal !important; }
+#tab-jobs .rs-cm-host .cm-string { color: #a5d6ff !important; }
+#tab-jobs .rs-cm-host .cm-string-2 { color: #79c0ff !important; }
+#tab-jobs .rs-code {
+  display: none; /* replaced by CM */
+}
+
+/* Logs pane */
+#tab-jobs .rs-log-head {
+  flex: 0 0 28px; height: 28px;
+  padding: 0 8px;
+  background: #161b22;
+  border-bottom: 1px solid #21262d;
+  display: flex; align-items: center; gap: 8px;
+}
+#tab-jobs .rs-log-dot {
+  width: 8px; height: 8px; border-radius: 50% !important;
+  background: #30363d; flex-shrink: 0;
+}
+#tab-jobs .rs-log-dot.running { background: #3fb950; animation: rsPulse 1.8s ease-in-out infinite; box-shadow: 0 0 0 2px rgba(63,185,80,.15) !important; }
+#tab-jobs .rs-log-dot.crashed { background: #f85149; }
+#tab-jobs .rs-log-label {
+  font-size: 11px; color: #7d8590;
+  font-family: ui-monospace, monospace; font-weight: 500;
+}
+#tab-jobs .rs-log-acts { margin-left: auto; display: flex; gap: 2px; }
+#tab-jobs .rs-log-body {
+  flex: 1 1 auto; overflow-y: auto;
+  padding: 8px 12px;
+  margin: 0;
+  background: #010409;
+  color: #c9d1d9;
+  font-family: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, Consolas, monospace;
+  font-size: 12px; line-height: 1.55;
+  white-space: pre-wrap; word-break: break-word; tab-size: 2;
+}
+#tab-jobs .rs-log-body::-webkit-scrollbar { width: 10px; }
+#tab-jobs .rs-log-body::-webkit-scrollbar-thumb { background: transparent; border: 3px solid transparent; border-radius: 10px; background-clip: padding-box; }
+#tab-jobs .rs-log-body:hover::-webkit-scrollbar-thumb { background: #30363d; background-clip: padding-box; }
+#tab-jobs .rs-log-empty { color: #484f58; font-style: italic; }
+#tab-jobs .rs-log-body .log-err { color: #ff7b72; }
+#tab-jobs .rs-log-body .log-ok { color: #3fb950; }
+#tab-jobs .rs-log-body .log-warn { color: #d29922; }
+#tab-jobs .rs-log-body .log-url { color: #58a6ff; text-decoration: underline; }
+
+/* Mobile backdrop */
+#tab-jobs .rs-menu-backdrop {
+  position: absolute; inset: 0; background: rgba(0,0,0,.5);
+  z-index: 20; display: none;
+}
+body.rs-side-open #tab-jobs .rs-menu-backdrop { display: block; }
+
+/* ───────── MOBILE ───────── */
+@media (max-width: 760px) {
+  #tab-jobs .rs-side {
+    position: absolute; top: 42px; bottom: 0; left: 0;
+    width: 0; flex-basis: 0; z-index: 30;
+    transition: width .2s ease, flex-basis .2s ease;
+    border-right: none;
+  }
+  body.rs-side-open #tab-jobs .rs-side {
+    width: 78vw; flex-basis: 78vw;
+    border-right: 1px solid #21262d;
+  }
+  #tab-jobs .rs-inp { min-width: 0; }
+  #tab-jobs .rs-gh { display: none; }
+  #tab-jobs .rs-bar { padding: 0 6px !important; gap: 6px !important; }
+  #tab-jobs .rs-ed-bar { padding: 0 4px; gap: 3px; }
+  /* Mobile: editor and logs share the split vertically; logs collapsed by default */
+  #tab-jobs .rs-split { position: relative; }
+  #tab-jobs .rs-divider { display: none; }
+  #tab-jobs .rs-logs {
+    flex: 0 0 0 !important;
+    height: 0 !important;
+    border-top: 1px solid #21262d;
+    transition: flex .2s ease, height .2s ease;
+    overflow: hidden;
+  }
+  #tab-jobs .rs-editor { flex: 1 1 auto !important; min-height: 0; }
+  body.rs-logs-open #tab-jobs .rs-editor { flex: 0 0 50% !important; }
+  body.rs-logs-open #tab-jobs .rs-logs   { flex: 0 0 50% !important; height: 50% !important; }
+  #tab-jobs .rs-cm-host .CodeMirror { font-size: 13.5px !important; padding: 6px 0 !important; }
+  #tab-jobs .rs-log-body { font-size: 11.5px; padding: 6px 8px; }
+  /* Tighten top bar for mobile */
+  #tab-jobs .rs-title { font-size: 12.5px; }
+  #tab-jobs .rs-text-btn { padding: 3px 8px; height: 24px; font-size: 11.5px; }
+  #tab-jobs .job-item { padding: 5px 8px !important; padding-right: 26px !important; }
+  /* Mobile: Run button icon-only to save space */
+  #tab-jobs .rs-run-btn { padding: 0 7px; }
+  #tab-jobs .rs-run-btn .rs-btn-label { display: none; }
+  #tab-jobs .rs-run-btn .rs-ic-sm { width: 10px; height: 10px; margin: 0; }
+}
+
+/* Small spin animation for buttons */
+@keyframes rsSpin { to { transform: rotate(360deg); } }
+#tab-jobs .spin-target.loading .rs-ic-sm,
+#tab-jobs .rs-icon-btn .rs-ic-sm[style*="animation"] { animation: rsSpin .7s linear infinite; }
+#tab-jobs #jobLogCopy.is-ok { color: #3fb950; }
+#tab-jobs .rs-icon-btn.loading { opacity: .7; pointer-events: none; }
+
+/* ───────── Job details drawer ───────── */
+body.rs-drawer-open { overflow: hidden; }
+body.rs-drawer-open #tab-jobs .rs-side { touch-action: none; pointer-events: none; }
+#tab-jobs .rs-list {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  scroll-behavior: smooth;
+}
+#tab-jobs .rs-detail {
+  /* Drawer is absolutely positioned to cover .rs-main (the editor+logs area);
+     sidebar stays visible on desktop, mobile media query makes it full-screen. */
+  position: absolute;
+  inset: 0;
+  /* FULLY OPAQUE background + ::before sheet is the ONLY reliable way to
+     prevent CodeMirror's independently-composited gutter/cursor/layer
+     elements from bleeding through the drawer on iOS/Mac Chrome. CM paints
+     its own GPU layer that ignores ancestor z-index unless a stacking
+     context with fully opaque background sits between it and the viewer. */
+  background: #0d1117;
+  z-index: 145;
+  display: flex;
+  flex-direction: column;
+  transform: translateX(100%);
+  transition: transform .22s cubic-bezier(.2,.7,.2,1);
+  border-left: 1px solid #21262d;
+  isolation: isolate;
+  will-change: transform;
+  backface-visibility: hidden;
+  /* Extra paint barrier: a fully-opaque pseudo-layer behind the content
+     that overlays the same size as the drawer body (the head/body/foot
+     paint on top). Guarantees no sub-pixel alpha leak from CM. */
+}
+#tab-jobs .rs-detail::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: #0d1117;
+  z-index: 0;
+  pointer-events: none;
+}
+#tab-jobs .rs-detail > * { position: relative; z-index: 1; }
+body.rs-detail-open #tab-jobs .rs-detail { transform: translateX(0); }
+#tab-jobs .rs-detail-head {
+  flex: 0 0 50px;
+  min-height: 50px;
+  padding: 0 8px;
+  display: flex; align-items: center; gap: 8px;
+  background: #161b22;
+  border-bottom: 1px solid #21262d;
+  /* This head is a sibling of rs-detail-body (the scroll container), not inside
+     it, so it stays pinned naturally as a flex item. Forcing its own GPU layer
+     prevents any CodeMirror bleed-through at the seam. */
+  position: relative;
+  z-index: 5;
+  transform: translateZ(0);
+  -webkit-transform: translateZ(0);
+  /* iOS safe-area so we never draw under the status bar when position:fixed */
+  padding-top: env(safe-area-inset-top, 0);
+}
+#tab-jobs .rs-detail-title { flex: 1; min-width: 0; }
+#tab-jobs .rs-detail-name {
+  font-family: ui-monospace, monospace; font-size: 13px; font-weight: 600;
+  color: #e6edf3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+#tab-jobs .rs-detail-sub {
+  margin-top: 2px; font-size: 11px; color: #7d8590;
+  display: flex; align-items: center; gap: 6px; font-family: ui-monospace, monospace;
+}
+#tab-jobs .rs-dot-sep { color: #30363d; }
+#tab-jobs .rs-detail-sub .jlang-icon { font-size: 10px; color: #58a6ff; font-weight: 700; width:auto; height:auto; display:inline; }
+#tab-jobs .rs-badge {
+  display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px;
+  padding: 1px 7px; border-radius: 10px !important; font-weight: 600; letter-spacing: .02em;
+  background: #21262d; color: #8b949e; text-transform: uppercase;
+}
+#tab-jobs .rs-badge.running { background: rgba(63,185,80,.15); color: #3fb950; }
+#tab-jobs .rs-badge.crashed { background: rgba(248,81,73,.15); color: #f85149; }
+#tab-jobs .rs-badge.starting,
+#tab-jobs .rs-badge.installing { background: rgba(210,153,34,.15); color: #d29922; }
+#tab-jobs .rs-detail-head-acts { display: flex; gap: 4px; margin-left: auto; align-items: center; }
+#tab-jobs .rs-detail-head-acts .rs-icon-btn { width: 30px; height: 30px; border-radius: 6px !important; }
+#tab-jobs .rs-detail-head-acts .rs-icon-btn:hover { background: #21262d; }
+#tab-jobs .rs-card-head { min-height: 34px; }
+#tab-jobs .rs-card-acts { align-items: center; }
+#tab-jobs .rs-card-acts .rs-icon-btn { width: 26px; height: 26px; }
+#tab-jobs .rs-url-row { min-height: 36px; }
+#tab-jobs .rs-health { font-size: 11px; }
+#tab-jobs .rs-detail-body {
+  flex: 1 1 auto; overflow-y: auto; padding: 12px;
+  display: flex; flex-direction: column; gap: 10px;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  scroll-behavior: smooth;
+  /* A separate compositing layer for the scroll container prevents
+     CodeMirror/lower panes from bleeding through during scroll on iOS/Android Chrome */
+  transform: translateZ(0);
+  will-change: scroll-position;
+  contain: layout paint;
+}
+#tab-jobs .rs-card {
+  background: #161b22;
+  border: 1px solid #21262d;
+  border-radius: 6px !important;
+  padding: 0;
+  /* overflow: hidden would clip sticky heads inside the card and break the
+     iOS-style "stacked sticky" effect, causing text to paint through on scroll.
+     We round corners via child clipping instead. */
+  overflow: visible;
+  position: relative;
+  flex-shrink: 0;
+  /* Each card owns its own stacking layer so body content from one card never
+     paints on top of a sticky head of the previous card during scroll-up. */
+  isolation: isolate;
+  transform: translateZ(0);
+  -webkit-transform: translateZ(0);
+}
+#tab-jobs .rs-card-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 10px; border-bottom: 1px solid #21262d;
+  font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em;
+  color: #7d8590;
+  background: #161b22;
+  position: sticky; top: 0; z-index: 2;
+  /* Re-clip top corners since card itself is overflow:visible (required for sticky) */
+  border-top-left-radius: 6px;
+  border-top-right-radius: 6px;
+  /* Own GPU layer — kills iOS paint-through ghosts on scroll-up */
+  transform: translateZ(0);
+  -webkit-transform: translateZ(0);
+  will-change: transform;
+  backface-visibility: hidden;
+}
+/* Re-clip bottom corners on the card's last child */
+#tab-jobs .rs-card > *:last-child {
+  border-bottom-left-radius: 6px;
+  border-bottom-right-radius: 6px;
+}
+#tab-jobs .rs-card-title { flex: 1; }
+#tab-jobs .rs-card-acts { display: flex; gap: 2px; margin-left: auto; }
+#tab-jobs .rs-card .rs-log-body { padding: 10px; max-height: 280px; font-size: 11.5px; }
+#tab-jobs .rs-card .rs-detail-logs {
+  flex: 0 0 auto;       /* override flex:1 1 auto from main panel */
+  max-height: 200px;
+  min-height: 80px;
+  overflow-y: auto !important;
+  overflow-x: hidden;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+#tab-jobs .rs-card .rs-detail-logs::-webkit-scrollbar { width: 8px; }
+#tab-jobs .rs-card .rs-detail-logs::-webkit-scrollbar-thumb {
+  background: #30363d; border-radius: 4px;
+}
+#tab-jobs .rs-url-row { display: flex; align-items: center; gap: 6px; padding: 8px 10px; }
+#tab-jobs .rs-url {
+  flex: 1; min-width: 0;
+  font-family: ui-monospace, monospace; font-size: 12px; color: #58a6ff;
+  text-decoration: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+#tab-jobs .rs-url:hover { text-decoration: underline; }
+#tab-jobs .rs-sub { padding: 0 10px 8px; font-size: 11px; color: #6e7681; }
+#tab-jobs .rs-health { display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; text-transform: none; letter-spacing: 0; font-weight: 500; }
+#tab-jobs .rs-h-dot { width: 7px; height: 7px; border-radius: 50% !important; background: #6e7681; }
+#tab-jobs .rs-health.ok .rs-h-dot { background: #3fb950; box-shadow: 0 0 0 2px rgba(63,185,80,.18); }
+#tab-jobs .rs-health.bad .rs-h-dot { background: #f85149; box-shadow: 0 0 0 2px rgba(248,81,73,.18); }
+#tab-jobs .rs-meta-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 8px 14px;
+  padding: 10px 12px;
+}
+#tab-jobs .rs-meta-grid > div { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 12px; }
+#tab-jobs .rs-k { color: #6e7681; font-family: ui-monospace, monospace; text-transform: uppercase; letter-spacing: .04em; font-size: 10.5px; flex-shrink: 0; }
+#tab-jobs .rs-v { font-family: ui-monospace, monospace; color: #c9d1d9; text-align: right; }
+#tab-jobs .rs-env-list { padding: 8px 12px; display: flex; flex-direction: column; gap: 6px; }
+#tab-jobs .rs-env-row { display: flex; gap: 6px; align-items: center; }
+#tab-jobs .rs-env-row input {
+  flex: 1; min-width: 0; height: 28px; background: #0d1117; border: 1px solid #30363d; color: #e6edf3;
+  font-family: ui-monospace, monospace; font-size: 12px; padding: 0 8px; border-radius: 4px !important;
+}
+#tab-jobs .rs-env-row input:focus { border-color: #58a6ff; outline: none; }
+#tab-jobs .rs-env-row .rs-env-v { -webkit-text-security: disc; }
+#tab-jobs .rs-env-row .rs-icon-btn { width: 26px; height: 26px; }
+#tab-jobs .rs-actions-row { display: flex; gap: 8px; padding: 10px 12px; flex-wrap: wrap; align-items: center; }
+
+/* ───────── Download split-button (GitHub/Vercel style) ───────── */
+#tab-jobs .rs-dl-wrap {
+  position: relative; display: inline-flex; align-items: stretch;
+  background: transparent; border: 1px solid #30363d;
+  border-radius: 6px !important; overflow: visible; height: 30px;
+}
+#tab-jobs .rs-dl-wrap:hover, #tab-jobs .rs-dl-wrap.open { border-color: #484f58; background: #0d1117; }
+#tab-jobs .rs-dl-main {
+  border: none !important; border-radius: 0 !important;
+  height: 100%; padding: 0 14px; background: transparent; color: #c9d1d9;
+  display: inline-flex; align-items: center; gap: 6px; font-size: 12px;
+  font-weight: 600; cursor: pointer;
+}
+#tab-jobs .rs-dl-main:hover { background: #21262d; }
+#tab-jobs .rs-dl-caret {
+  border: none !important; border-left: 1px solid #30363d !important;
+  border-radius: 0 !important; height: 100%; width: 28px;
+  background: transparent; color: #7d8590; display: grid; place-items: center;
+  cursor: pointer; padding: 0;
+}
+#tab-jobs .rs-dl-caret:hover { background: #21262d; color: #e6edf3; }
+#tab-jobs .rs-dl-wrap.open .rs-dl-caret svg { transform: rotate(180deg); }
+#tab-jobs .rs-dl-caret svg { transition: transform .15s ease; display: block; }
+#tab-jobs .rs-dl-menu {
+  position: absolute; right: 0; top: calc(100% + 6px);
+  background: #161b22; border: 1px solid #30363d; border-radius: 8px !important;
+  padding: 6px; min-width: 220px; z-index: 60;
+  box-shadow: 0 8px 24px rgba(0,0,0,.4);
+  display: none;
+  animation: rsFadeIn .15s ease both;
+}
+#tab-jobs .rs-dl-wrap.open .rs-dl-menu { display: block; }
+#tab-jobs .rs-dl-item {
+  width: 100%; display: flex; align-items: center; gap: 10px;
+  background: transparent; border: 0; color: #c9d1d9; padding: 8px 10px;
+  border-radius: 6px !important; cursor: pointer; text-align: left;
+  font-size: 13px; line-height: 1.2;
+}
+#tab-jobs .rs-dl-item:hover { background: #21262d; }
+#tab-jobs .rs-dl-ic {
+  width: 28px; height: 28px; flex-shrink: 0;
+  background: #21262d; border-radius: 6px !important;
+  display: grid; place-items: center; color: #58a6ff;
+}
+#tab-jobs .rs-dl-ic svg { width: 14px; height: 14px; display: block; }
+#tab-jobs .rs-dl-tx { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+#tab-jobs .rs-dl-tx b { font-weight: 600; font-size: 12.5px; color: #e6edf3; }
+#tab-jobs .rs-dl-tx small { font-size: 10.5px; color: #6e7681; font-family: ui-monospace,monospace; }
+#tab-jobs .rs-timeline { list-style: none; margin: 0; padding: 6px 10px 10px; display: flex; flex-direction: column; gap: 4px; }
+#tab-jobs .rs-timeline li { font-size: 11.5px; color: #8b949e; font-family: ui-monospace, monospace; display: flex; gap: 8px; }
+#tab-jobs .rs-timeline .rs-ts { color: #484f58; }
+#tab-jobs .rs-timeline .rs-te.ok { color: #3fb950; }
+#tab-jobs .rs-timeline .rs-te.err { color: #f85149; }
+#tab-jobs .rs-timeline .rs-te.warn { color: #d29922; }
+#tab-jobs .rs-detail-foot { padding: 10px 12px 14px; display: flex; gap: 8px; align-items: center; border-top: 1px solid #21262d; background: #161b22; flex-shrink: 0; position: sticky; bottom: 0; z-index: 4; transform: translateZ(0); -webkit-transform: translateZ(0); will-change: transform; border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+#tab-jobs .rs-detail-foot .rs-text-btn { height: 30px; padding: 0 14px; font-size: 12.5px; }
+
+/* When the drawer is open, block pointer events on the covered workspace
+   so taps don't reach CM or log controls through the drawer. Do NOT hide
+   the workspace visually — the drawer is fully opaque (#0d1117 background
+   + ::before barrier) and covers it entirely. */
+body.rs-detail-open #tab-jobs .rs-ws {
+  pointer-events: none;
+}
+body.rs-detail-open #tab-jobs .rs-detail { z-index: 145; }
+#tab-jobs .rs-empty-sm { padding: 8px 0; color: #484f58; font-size: 11.5px; font-style: italic; }
+
+/* Prevent iOS double-tap zoom on tappable controls (fast-tap) */
+#tab-jobs button,
+#tab-jobs a,
+#tab-jobs .rs-icon-btn,
+#tab-jobs .rs-text-btn,
+#tab-jobs .rs-dl-item,
+#tab-jobs .job-item {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+@media (max-width: 760px) {
+  /* Mobile: drawer takes the FULL viewport (covers top bar too) for a
+     native-sheet feel. */
+  #tab-jobs .rs-detail {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    width: 100%;
+    border-left: none;
+    z-index: 200;
+  }
+  #tab-jobs .rs-detail-body { padding: 8px; gap: 8px; }
+  /* iOS min 44px tap targets */
+  #tab-jobs .rs-icon-btn { width: 38px; height: 38px; }
+  #tab-jobs .rs-detail-head-acts .rs-icon-btn { width: 40px; height: 40px; }
+  #tab-jobs .rs-card-acts .rs-icon-btn { width: 36px; height: 36px; }
+  #tab-jobs .rs-text-btn { height: 34px; min-height: 34px; padding: 0 12px; }
+  #tab-jobs .rs-detail-foot .rs-text-btn { height: 36px; }
+  #tab-jobs .rs-dl-wrap { height: 36px; }
+  #tab-jobs .rs-dl-caret { width: 36px; }
+  #tab-jobs .rs-env-row input { height: 34px; font-size: 16px; /* prevents iOS zoom */ }
+  #tab-jobs .rs-inp { height: 30px; font-size: 16px; }
+  #tab-jobs .rs-run-btn { height: 30px; }
+}
+
+/* ───────── Skeleton shimmer (Vercel/Linear-style) ───────── */
+@keyframes rsShimmer {
+  0%   { background-position: -400px 0; }
+  100% { background-position:  400px 0; }
+}
+@keyframes rsFadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes rsSlideIn {
+  from { opacity: 0; transform: translateX(8px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+.rs-skel {
+  background: linear-gradient(90deg,
+    #161b22 0%, #1c232d 40%, #252d38 60%, #161b22 100%);
+  background-size: 800px 100%;
+  animation: rsShimmer 1.2s linear infinite;
+  border-radius: 4px !important;
+  height: 12px;
+}
+.rs-skel-wrap { padding: 4px 0; animation: rsFadeIn .18s ease both; }
+.rs-skel-job {
+  display: flex; align-items: center; gap: 8px; padding: 10px 12px;
+  height: 40px;
+}
+.rs-skel-job .rs-skel { height: 10px; }
+
+/* Main editor-pane skeleton while first job loads */
+.rs-main-skel {
+  flex: 1 1 auto; padding: 14px; display: flex; flex-direction: column; gap: 10px;
+  animation: rsFadeIn .2s ease both;
+}
+.rs-main-skel .rs-skel { height: 14px; }
+.rs-main-skel .rs-skel.w60 { width: 60%; }
+.rs-main-skel .rs-skel.w40 { width: 40%; }
+.rs-main-skel .rs-skel.code { height: calc(100% - 60px); min-height: 180px; border-radius: 6px !important; }
+.rs-skel-dot {
+  width: 8px; height: 8px; border-radius: 50% !important; flex-shrink: 0;
+  background: #21262d; animation: rsShimmer 1.2s linear infinite;
+}
+.rs-fade-in { animation: rsFadeIn .22s ease both; }
+.rs-slide-in { animation: rsSlideIn .22s ease both; }
+/* Smooth out panel transitions on tab switch */
+#tab-jobs .rs-pane,
+#tab-jobs .rs-side,
+#tab-jobs .rs-ws { will-change: transform; backface-visibility: hidden; }
+/* Better scrolling on all internal scroll containers */
+#tab-jobs .rs-list,
+#tab-jobs .rs-log-body,
+#tab-jobs .rs-detail-body {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  scroll-behavior: smooth;
+  will-change: scroll-position;
+}

@@ -39,7 +39,7 @@ import threading
 import time
 from pathlib import Path
 
-logger = logging.getLogger("ahad-co-db")
+logger = logging.getLogger("codenest-db")
 
 # ---------------------------------------------------------------------------
 # Dialect selection
@@ -331,7 +331,7 @@ def _get_pool():
                 "keepalives_count": 5,
             }
             if "application_name" not in dsn:
-                connect_kwargs["application_name"] = "ahad-co"
+                connect_kwargs["application_name"] = "codenest"
             if "sslmode" not in _DATABASE_URL and PG_SSLMODE:
                 connect_kwargs["sslmode"] = PG_SSLMODE
             logger.info("Creating PostgreSQL connection pool (maxconn=8)")
@@ -455,7 +455,7 @@ _SCHEMA_TABLES = [
         ip_address TEXT,
         created_at TEXT NOT NULL,
         last_seen TEXT NOT NULL,
-        FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+        expires_at TEXT
     )
     """,
     """
@@ -553,6 +553,17 @@ _SCHEMA_TABLES = [
         is_public INTEGER DEFAULT 0,
         views INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+    )
+    """,
+    """
+    -- Termux home snapshots: tar+gzip+base64 of the user's $HOME. Restored
+    -- on first spawn after a deploy/restart so nano files, bash history,
+    -- pip --user packages etc. survive container restarts.
+    CREATE TABLE IF NOT EXISTS term_homes (
+        user_id INTEGER PRIMARY KEY,
+        tarball_b64 TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
     )
