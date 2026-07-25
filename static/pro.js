@@ -258,7 +258,7 @@ function openMoreSheet() { openSideMenu(); }
 function closeMoreSheet() { closeSideMenu(); }
 
 /* ---------------- API HELPER ---------------- */
-async function api(path, method = "POST", body = null, auth = false) {
+async function api(path, method = "POST", body = null, auth = false, _retried = false) {
   const headers = { "Content-Type": "application/json" };
   if (auth && authToken) headers["Authorization"] = "Bearer " + authToken;
 
@@ -282,11 +282,29 @@ async function api(path, method = "POST", body = null, auth = false) {
   const data = await res.json().catch(() => ({}));
 
   if (res.status === 401 && auth) {
+    // Free-tier cold starts can 401 briefly while the Supabase pooler is
+    // spinning up — a single 401 during a cold boot is NOT a real expired
+    // session. Retry once after 800ms; only log out if the retry ALSO 401s.
+    // Skip retry on auth endpoints themselves (login/logout) so a bad token
+    // during sign-in surfaces immediately.
+    const isSafe = path.indexOf("/api/jobs") === 0 ||
+                   path.indexOf("/profile") === 0 ||
+                   path.indexOf("/snippets") === 0 ||
+                   path.indexOf("/stats") === 0;
+    if (isSafe && !_retried) {
+      await new Promise(r => setTimeout(r, 800));
+      try { return await api(path, method, body, auth, true); }
+      catch (retryErr) {
+        if (retryErr.kind === "infra") throw retryErr;
+        // Retry still failed — fall through to logout
+      }
+    }
     localStorage.removeItem("ahad_token");
     localStorage.removeItem("ahad_auth_token");
     localStorage.removeItem("ahad_user");
+    authToken = null;
     toast("Session expired. Please sign in again.", "error");
-    setTimeout(() => window.location.reload(), 1500);
+    setTimeout(() => { window.location.href = "/"; }, 1500);
     throw new Error("Session expired.");
   }
 

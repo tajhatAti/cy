@@ -234,7 +234,8 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
         return False
 
 
-SESSION_TTL_DAYS = 30
+SESSION_TTL_DAYS = 90   # extended from 30 days — users reported being logged out
+                        # too often across free-tier cold starts.
 
 
 def _ensure_expires_column(conn):
@@ -381,6 +382,22 @@ def get_current_user_and_session(authorization: Optional[str] = Header(None)):
             raise HTTPException(status_code=401, detail="Account not found.")
         if "is_suspended" in user_row.keys() and user_row["is_suspended"]:
             raise HTTPException(status_code=401, detail="This account is suspended.")
+
+        # Sliding expiry: if session is >24h old, roll expires_at forward by a
+        # full TTL window. This way active users are NEVER kicked out — only
+        # truly inactive sessions expire (matches how GitHub/Vercel behave).
+        try:
+            from datetime import datetime, timezone, timedelta as _td
+            exp_str = session_row["expires_at"] if "expires_at" in session_row.keys() else None
+            if exp_str:
+                exp_d = datetime.strptime(exp_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+                now_d = datetime.now(timezone.utc)
+                # If less than (TTL - 1 day) remaining → refresh
+                if exp_d - now_d < _td(days=SESSION_TTL_DAYS - 1):
+                    new_exp = (now_d + _td(days=SESSION_TTL_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
+                    conn.execute("UPDATE sessions SET expires_at = ? WHERE id = ?", (new_exp, session_row["id"]))
+        except Exception:
+            pass
 
         conn.execute("UPDATE sessions SET last_seen = ? WHERE id = ?", (now_utc_str(), session_row["id"]))
         conn.commit()
