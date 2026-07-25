@@ -763,14 +763,19 @@ body.rs-detail-open #tab-jobs .rs-detail { transform: translateX(0); }
 #tab-jobs .rs-detail-foot { padding: 10px 12px 14px; display: flex; gap: 8px; align-items: center; border-top: 1px solid #21262d; background: #161b22; flex-shrink: 0; position: sticky; bottom: 0; z-index: 4; transform: translateZ(0); -webkit-transform: translateZ(0); will-change: transform; border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
 #tab-jobs .rs-detail-foot .rs-text-btn { height: 30px; padding: 0 14px; font-size: 12.5px; }
 
-/* When the drawer is open, block pointer events on the covered workspace
-   so taps don't reach CM or log controls through the drawer. Do NOT hide
-   the workspace visually — the drawer is fully opaque (#0d1117 background
-   + ::before barrier) and covers it entirely. */
-body.rs-detail-open #tab-jobs .rs-ws {
+/* Details lives INSIDE .rs-ws. Never disable pointer events on .rs-ws itself:
+   pointer-events is inherited, so doing that freezes every button, link and
+   scroll area in the visible Details page. Disable only the covered editor
+   siblings; keep the route-backed Details page explicitly interactive. */
+body.rs-detail-open #tab-jobs .rs-ws > .rs-ed-bar,
+body.rs-detail-open #tab-jobs .rs-ws > .rs-split {
   pointer-events: none;
+  user-select: none;
 }
-body.rs-detail-open #tab-jobs .rs-detail { z-index: 145; }
+body.rs-detail-open #tab-jobs .rs-detail {
+  z-index: 145;
+  pointer-events: auto;
+}
 #tab-jobs .rs-empty-sm { padding: 8px 0; color: #484f58; font-size: 11.5px; font-style: italic; }
 
 /* Prevent iOS double-tap zoom on tappable controls (fast-tap) */

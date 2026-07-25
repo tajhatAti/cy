@@ -19,7 +19,7 @@
 <!-- Termux-style PTY terminal panel -->
 <link rel="stylesheet" href="/static/terminal.css?v=20260724m">
 <!-- RunSpace GitHub-dark raw theme -->
-<link rel="stylesheet" href="/static/runspace-dark.css?v=20260724m">
+<link rel="stylesheet" href="/static/runspace-dark.css?v=20260725a">
 <!-- xterm.js (browser terminal emulator for the live PTY) -->
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css">
 <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
@@ -680,8 +680,8 @@
               </div>
             </div>
 
-            <!-- JOB DETAILS DRAWER -->
-            <aside class="rs-detail" id="jobDetailPanel" aria-hidden="true">
+            <!-- ROUTE-BACKED JOB DETAILS PAGE: /runspace/:user/:job/details -->
+            <aside class="rs-detail" id="jobDetailPanel" aria-hidden="true" aria-label="RunSpace job details">
               <div class="rs-detail-head">
                 <button class="rs-icon-btn rs-tb" id="jobDetailBack" title="Back to editor">
                   <svg viewBox="0 0 24 24" class="rs-ic-sm" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>
@@ -1073,7 +1073,7 @@
 
 <div class="toast-container" id="toastContainer"></div>
 
-<script src="/static/pro.js?v=20260724m"></script>
+<script src="/static/pro.js?v=20260725a"></script>
 <script src="/static/terminal.js?v=20260724m"></script>
 <script>
   // Safety net: never leave the user stuck on the splash — remove the

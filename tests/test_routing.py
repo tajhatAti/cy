@@ -49,6 +49,11 @@ for p in DIRECT:
     r = c.get(p, headers=HTML_NAV)
     check(f"client path {p} -> SPA shell", r.status_code == 200 and "<html" in r.text.lower())
 
+# Every job has separate refresh-safe workspace and Details URLs.
+for p in ("/runspace/router/my-bot", "/runspace/router/my-bot/details"):
+    r = c.get(p, headers=HTML_NAV)
+    check(f"RunSpace deep link {p} -> SPA shell", r.status_code == 200 and "<html" in r.text.lower())
+
 # plain GET / still the shell; /health + /terms unaffected
 r = c.get("/", headers=HTML_NAV)
 check("GET / still serves landing shell", r.status_code == 200 and "<html" in r.text.lower())

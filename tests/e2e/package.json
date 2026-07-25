@@ -2,6 +2,9 @@
   "name": "runspace-e2e",
   "private": true,
   "description": "jsdom e2e harness for the RunSpace app (dev-only; node_modules gitignored)",
-  "scripts": { "test": "node test-pivot.js" },
+  "scripts": {
+    "test": "node test-pivot.js",
+    "test:runspace-details": "node test-runspace-details.js"
+  },
   "dependencies": { "jsdom": "^24.1.0" }
 }

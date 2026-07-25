@@ -170,8 +170,10 @@ CLIENT_ONLY_PATHS = [
 for _p in CLIENT_ONLY_PATHS:
     app.get("/" + _p, include_in_schema=False)(read_index)
 
-# /runspace/{username}/{job-slug} → SPA shell; frontend routes to jobs tab and
-# selects the matching job (deep-linking per job).
+# RunSpace deep links → SPA shell. The path converter intentionally supports
+# both the editor route (/runspace/{username}/{job-slug}) and its dedicated
+# Details page (/runspace/{username}/{job-slug}/details); the frontend restores
+# the selected job and exact view after refresh.
 @app.get("/runspace/{username}/{slug:path}", include_in_schema=False)
 def read_runspace_deep(username: str, slug: str):
     if not INDEX_FILE.exists():

@@ -66,6 +66,12 @@ function switchTab(tabId) {
   // Pseudo-tabs (e.g. the Activity launcher has no data-tab) must NOT
   // blank the dashboard — a missing/unknown tab target = no-op.
   if (!tabId || !document.getElementById(`tab-${tabId}`)) return;
+  // Details is a route-backed RunSpace page. Leaving RunSpace must tear the
+  // page down without trying to navigate back to its editor route first;
+  // switchTab will push the destination section below.
+  if (tabId !== "jobs" && document.body.classList.contains("rs-detail-open")) {
+    closeJobDetails({ navigate: false });
+  }
   currentTab = tabId;
   // Leaving the code studio while the editor is fullscreen would trap the
   // overlay over the next section — always collapse it first.
@@ -845,6 +851,10 @@ async function loadDashboard() {
     _dashRetries = 0;                     // healthy again — reset the backoff
     document.getElementById("dashUsername").textContent = profile.username;
     document.getElementById("dashUsername2").textContent = profile.username;
+    // Routing needs the real username for stable per-job URLs. The previous
+    // boot-time capture stored the placeholder string "User", while
+    // _updateJobUrl incorrectly expected an object, so job URLs never changed.
+    window.__user = profile.username;
     document.getElementById("profileUsername").value = profile.username;
     document.getElementById("profileEmail").value = profile.email;
     document.getElementById("profilePhone").value = profile.phone || "";
@@ -1919,6 +1929,11 @@ const ROUTES = {
   "/terminal": "term", "/term": "term",
   "/admin": "admin", "/profile": "profile",
 };
+// A job workspace and its Details page are deliberately different routes:
+//   /runspace/:username/:job             editor + logs
+//   /runspace/:username/:job/details     dedicated Details page
+// Keep Details first when matching because it is more specific.
+const _JOB_DETAILS_PATH_RE = /^\/runspace\/([^/]+)\/([^/]+)\/details\/?$/;
 const _JOB_PATH_RE = /^\/runspace\/([^/]+)\/([^/]+)\/?$/;
 const TAB_PATHS = {};
 Object.keys(ROUTES).forEach(p => { if (!TAB_PATHS[ROUTES[p]]) TAB_PATHS[ROUTES[p]] = p; });
@@ -1959,13 +1974,22 @@ function routeFromUrl() {
       showScreen("screen-signin");
       return "blocked";
     }
+    // Plain section URLs are not Details routes. This matters on browser Back:
+    // close the page state without causing another history navigation.
+    window.__rs_deep_slug = null;
+    window.__rs_deep_view = null;
+    if (document.body.classList.contains("rs-detail-open")) {
+      closeJobDetails({ navigate: false });
+    }
     showScreen("screen-dashboard");
     if (ROUTES[p] !== currentTab) _switch(ROUTES[p]);
     return "tab";
   }
-  // Deep link: /runspace/{username}/{slug} → open RunSpace and select the matching job.
-  const _jd = p.match(_JOB_PATH_RE);
-  if (_jd) {
+  // Deep links select the matching job, then apply the route's view. A Details
+  // URL opens Details even after a hard refresh; the workspace URL does not.
+  const _detailsMatch = p.match(_JOB_DETAILS_PATH_RE);
+  const _jobMatch = _detailsMatch || p.match(_JOB_PATH_RE);
+  if (_jobMatch) {
     if (!hasToken) {
       try { sessionStorage.setItem("ahad_return_to", p); } catch (e2) {}
       history.replaceState({}, "", "/sign-in");
@@ -1973,9 +1997,10 @@ function routeFromUrl() {
       return "blocked";
     }
     showScreen("screen-dashboard");
-    window.__rs_deep_slug = decodeURIComponent(_jd[2] || "");
+    window.__rs_deep_slug = decodeURIComponent(_jobMatch[2] || "");
+    window.__rs_deep_view = _detailsMatch ? "details" : "workspace";
     if (currentTab !== "jobs") _switch("jobs");
-    else _deepSelectJobBySlug(window.__rs_deep_slug);
+    else _deepSelectJobBySlug(window.__rs_deep_slug, window.__rs_deep_view);
     return "tab";
   }
   if (AUTH_ROUTES[p]) {
@@ -1999,19 +2024,26 @@ function routeFromUrl() {
 function _consumeReturnTo() {
   let rt = null;
   try { rt = sessionStorage.getItem("ahad_return_to"); } catch (e) {}
-  if (rt && (ROUTES[rt] || rt === "/activity")) {
+  const isJobReturn = !!(rt && (_JOB_DETAILS_PATH_RE.test(rt) || _JOB_PATH_RE.test(rt)));
+  if (rt && (ROUTES[rt] || rt === "/activity" || isJobReturn)) {
     try { sessionStorage.removeItem("ahad_return_to"); } catch (e2) {}
     try { history.replaceState({}, "", rt); } catch (e3) {}
-    _routeNav = true;
-    switchTab(ROUTES[rt] || "overview");
-    _routeNav = false;
-    if (rt === "/activity" && typeof openActivityPanel === "function") openActivityPanel();
+    if (isJobReturn) {
+      // Preserve the complete deep link, including /details, after sign-in.
+      routeFromUrl();
+    } else {
+      _routeNav = true;
+      switchTab(ROUTES[rt] || "overview");
+      _routeNav = false;
+      if (rt === "/activity" && typeof openActivityPanel === "function") openActivityPanel();
+    }
   } else {
     // Never clobber the address bar if the user already navigated into a
     // section while the dashboard was still loading (e.g. quick-click on
     // RunSpace right after sign-in) — the URL is the user's truth.
     const cur = _clientPath();
-    if (!ROUTES[cur] && cur !== "/dashboard") {
+    const isJobPath = _JOB_DETAILS_PATH_RE.test(cur) || _JOB_PATH_RE.test(cur);
+    if (!ROUTES[cur] && cur !== "/dashboard" && !isJobPath) {
       try { history.replaceState({}, "", "/dashboard"); } catch (e4) {}
     }
   }
@@ -2462,18 +2494,60 @@ function _slugify(s) {
     .replace(/^-+|-+$/g, "")
     .slice(0, 80) || "untitled";
 }
-function _deepSelectJobBySlug(slug) {
-  if (!slug || !window._lastJobs || !window._lastJobs.length) return;
+function _runspaceUsername() {
+  // __user is a string in the current dashboard. Accept the older object form
+  // too so cached pages survive a rolling deploy.
+  let u = window.__user;
+  if (u && typeof u === "object") u = u.username;
+  if (!u && _lastProfile) u = _lastProfile.username;
+  if (!u) {
+    const el = document.getElementById("dashUsername");
+    u = el && el.textContent;
+  }
+  u = String(u || "").trim();
+  if (!u || u.toLowerCase() === "user") {
+    // During a direct deep-link boot the profile request may still be in
+    // flight; use the username already present in the route in the meantime.
+    const m = _clientPath().match(_JOB_DETAILS_PATH_RE) || _clientPath().match(_JOB_PATH_RE);
+    if (m) {
+      try { u = decodeURIComponent(m[1] || "").trim(); } catch (e) { u = m[1] || ""; }
+    }
+  }
+  return u && u.toLowerCase() !== "user" ? u : "";
+}
+function _jobWorkspacePath(job) {
+  const u = _runspaceUsername();
+  if (!u || !job || !job.name) return "/runspace";
+  return "/runspace/" + encodeURIComponent(u) + "/" + _slugify(job.name);
+}
+function _jobDetailsPath(job) {
+  const base = _jobWorkspacePath(job);
+  return base === "/runspace" ? base : base + "/details";
+}
+function _deepSelectJobBySlug(slug, view) {
+  if (!slug || !window._lastJobs || !window._lastJobs.length) return false;
   const j = window._lastJobs.find(x => _slugify(x.name) === slug);
-  if (j) selectJob(j.id);
+  if (!j) return false;
+  // Applying browser history must never write another history entry.
+  const wasRouteNav = _routeNav;
+  _routeNav = true;
+  selectJob(j.id);
+  if (view === "details") openJobDetails(j.id, { navigate: false });
+  else closeJobDetails({ navigate: false });
+  _routeNav = wasRouteNav;
+  window.__rs_deep_slug = null;
+  window.__rs_deep_view = null;
+  return true;
 }
 function _updateJobUrl(job) {
   try {
-    const u = (window.__user && window.__user.username) ? window.__user.username : null;
-    if (!u || !job || !job.name) return;
-    const path = "/runspace/" + encodeURIComponent(u) + "/" + _slugify(job.name);
+    // Polling refreshes the selected job every few seconds. Never let that
+    // background refresh erase a currently-open /details URL.
+    if (_jdOpen || _JOB_DETAILS_PATH_RE.test(_clientPath())) return;
+    const path = _jobWorkspacePath(job);
+    if (path === "/runspace") return;
     if (_clientPath() !== path && !_routeNav) {
-      history.replaceState({tab:"jobs",jobId:job.id}, "", path);
+      history.replaceState({tab:"jobs",jobId:job.id,runspaceView:"workspace"}, "", path);
     }
   } catch (e) {}
 }
@@ -3028,10 +3102,14 @@ function renderJobs(jobs) {
     }
     list.appendChild(item);
   });
-  // Deep-link: if URL says /runspace/u/slug, pick that job regardless of running state
+  // Deep-link: select the requested job and restore either its workspace or
+  // its dedicated /details page, regardless of running state.
   let deepPick = null;
   if (window.__rs_deep_slug) deepPick = jobs.find(x => _slugify(x.name) === window.__rs_deep_slug);
-  if (deepPick) { selectJob(deepPick.id); window.__rs_deep_slug = null; _suppressAutoSelect = 0; }
+  if (deepPick) {
+    _deepSelectJobBySlug(window.__rs_deep_slug, window.__rs_deep_view || "workspace");
+    _suppressAutoSelect = 0;
+  }
   else if (Date.now() < _suppressAutoSelect) {
     // New was just clicked — do NOT auto-select; keep blank editor.
     document.querySelectorAll("#jobsList .job-item.active").forEach(el => el.classList.remove("active"));
@@ -3322,29 +3400,70 @@ function _initSplitDrag() {
   window.addEventListener("touchend", () => { dragging = false; });
 }
 
-// ─── Job Details drawer ──────────────────────────────────────────────
+// ─── Job Details page ────────────────────────────────────────────────
+// Details visually occupies the RunSpace content area and has its own URL.
+// It is not just an unaddressable drawer state.
 let _jdOpen = false;
 let _jdHealthTimer = null;
 let _jdTimeline = [];
 let _jdLogFollow = true;
-function openJobDetails(id) {
+function openJobDetails(id, options) {
+  options = options || {};
   if (id) selectJob(id);
-  document.body.classList.add("rs-detail-open");
+  const job = (window._lastJobs || []).find(x => String(x.id) === String(_selectedJobId));
+  if (!job) return false;
+
+  document.body.classList.add("rs-detail-open", "rs-drawer-open");
   _jdOpen = true;
+  const panel = document.getElementById("jobDetailPanel");
+  if (panel) panel.setAttribute("aria-hidden", "false");
   renderJobDetails();
   _startHealthCheck();
-  // Lock background scroll on mobile (prevents double-scroll)
-  document.body.classList.add("rs-drawer-open");
-  // Reset drawer scroll to top so cards start at URL/Logs
+
+  // A user click creates a real, bookmarkable Details history entry. Route
+  // restoration (refresh/popstate) passes navigate:false to avoid recursion.
+  if (options.navigate !== false && !_routeNav) {
+    const path = _jobDetailsPath(job);
+    if (path !== "/runspace" && _clientPath() !== path) {
+      const from = _JOB_DETAILS_PATH_RE.test(_clientPath())
+        ? _jobWorkspacePath(job)
+        : _clientPath();
+      try {
+        history.pushState({
+          tab: "jobs", jobId: job.id, runspaceView: "details",
+          runspaceFrom: from || _jobWorkspacePath(job),
+        }, "", path);
+      } catch (e) {}
+    }
+  }
+
+  // Reset page scroll so cards start at Logs/Public URL.
   const db = document.querySelector("#tab-jobs .rs-detail-body");
   if (db) db.scrollTop = 0;
   _jdLogFollow = true;
+  return true;
 }
-function closeJobDetails() {
-  document.body.classList.remove("rs-detail-open");
-  document.body.classList.remove("rs-drawer-open");
+function closeJobDetails(options) {
+  options = options || {};
+  const wasOpen = _jdOpen || document.body.classList.contains("rs-detail-open");
+  document.body.classList.remove("rs-detail-open", "rs-drawer-open");
   _jdOpen = false;
+  const panel = document.getElementById("jobDetailPanel");
+  if (panel) panel.setAttribute("aria-hidden", "true");
   if (_jdHealthTimer) { clearInterval(_jdHealthTimer); _jdHealthTimer = null; }
+
+  if (options.navigate !== false && _JOB_DETAILS_PATH_RE.test(_clientPath())) {
+    const job = (window._lastJobs || []).find(x => String(x.id) === String(_selectedJobId));
+    const fallback = job ? _jobWorkspacePath(job) : "/runspace";
+    // Details opened inside this SPA: Back consumes the Details entry instead
+    // of adding a second editor entry. A directly-loaded Details URL has no
+    // marker, so replace it safely rather than throwing the user off-site.
+    if (history.state && history.state.runspaceView === "details" && history.state.runspaceFrom) {
+      try { history.back(); return wasOpen; } catch (e) {}
+    }
+    try { history.replaceState({tab:"jobs",jobId:job && job.id,runspaceView:"workspace"}, "", fallback); } catch (e) {}
+  }
+  return wasOpen;
 }
 function _jdSet(name, value) {
   const el = document.getElementById(name);
@@ -3352,7 +3471,7 @@ function _jdSet(name, value) {
 }
 function renderJobDetails() {
   const job = (window._lastJobs||[]).find(x => String(x.id) === String(_selectedJobId));
-  if (!job) { closeJobDetails(); return; }
+  if (!job) { closeJobDetails({ navigate: false }); return; }
   _jdSet("jdName", job.name || "untitled");
   const l = document.getElementById("jdLang"); if (l) l.textContent = _langIcon(job.language);
   const badge = document.getElementById("jdBadge");
