@@ -292,3 +292,65 @@ def report_abuse_submit(payload: AbuseReportIn, request: Request):
 # ================================
 # GLOBAL SEARCH (snippets + RunSpace apps)
 # ================================
+
+@router.get("/admin/fingerprint-clusters")
+def get_fingerprint_clusters(authorization: Optional[str] = Header(None)):
+    """Show accounts grouped by fingerprint (for abuse detection)"""
+    user, _ = get_current_user_and_session(authorization)
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin only")
+
+    conn = get_db_connection()
+    try:
+        rows = conn.execute("""
+            SELECT fingerprint, COUNT(*) as account_count, 
+                   GROUP_CONCAT(username) as usernames
+            FROM users 
+            WHERE fingerprint IS NOT NULL AND fingerprint != ''
+            GROUP BY fingerprint 
+            HAVING COUNT(*) > 1
+            ORDER BY account_count DESC
+            LIMIT 50
+        """).fetchall()
+
+        clusters = []
+        for row in rows:
+            clusters.append({
+                "fingerprint": row["fingerprint"][:50] + "...",
+                "account_count": row["account_count"],
+                "usernames": row["usernames"].split(",")[:10] if row["usernames"] else []
+            })
+        return {"clusters": clusters, "total": len(clusters)}
+    finally:
+        conn.close()
+
+@router.get("/admin/fingerprint-clusters")
+def get_fingerprint_clusters(authorization: Optional[str] = Header(None)):
+    """Show accounts grouped by fingerprint (for abuse detection)"""
+    user, _ = get_current_user_and_session(authorization)
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin only")
+
+    conn = get_db_connection()
+    try:
+        rows = conn.execute("""
+            SELECT fingerprint, COUNT(*) as account_count, 
+                   GROUP_CONCAT(username) as usernames
+            FROM users 
+            WHERE fingerprint IS NOT NULL AND fingerprint != ''
+            GROUP BY fingerprint 
+            HAVING COUNT(*) > 1
+            ORDER BY account_count DESC
+            LIMIT 50
+        """).fetchall()
+
+        clusters = []
+        for row in rows:
+            clusters.append({
+                "fingerprint": row["fingerprint"][:50] + "...",
+                "account_count": row["account_count"],
+                "usernames": row["usernames"].split(",")[:10] if row["usernames"] else []
+            })
+        return {"clusters": clusters, "total": len(clusters)}
+    finally:
+        conn.close()

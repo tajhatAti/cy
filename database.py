@@ -442,6 +442,9 @@ _SCHEMA_TABLES = [
         phone TEXT,
         custom_code TEXT,
         links TEXT,
+        telegram_id INTEGER UNIQUE,
+        fingerprint TEXT,
+        last_ip TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
     )

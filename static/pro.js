@@ -387,6 +387,81 @@ function btnFail(btn) {
 }
 
 /* ---------------- SIGN-UP AVAILABILITY (already-registered check) ------ */
+// Strong device fingerprint for abuse prevention
+async function generateDeviceFingerprint() {
+  const fp = {
+    ua: navigator.userAgent,
+    screen: `${screen.width}x${screen.height}x${screen.colorDepth}`,
+    tz: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    cores: navigator.hardwareConcurrency || 0,
+    canvas: await getCanvasFingerprint(),
+    webgl: getWebGLFingerprint(),
+    fonts: getInstalledFonts(),
+    audio: await getAudioFingerprint()
+  };
+  return JSON.stringify(fp);
+}
+
+async function getCanvasFingerprint() {
+  try {
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    ctx.textBaseline = 'top';
+    ctx.font = '14px Arial';
+    ctx.fillText('CodeNest Fingerprint', 2, 2);
+    return canvas.toDataURL().slice(-50);
+  } catch (e) { return 'no-canvas'; }
+}
+
+function getWebGLFingerprint() {
+  try {
+    const canvas = document.createElement('canvas');
+    const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
+    if (!gl) return 'no-webgl';
+    const renderer = gl.getParameter(gl.RENDERER) || '';
+    const vendor = gl.getParameter(gl.VENDOR) || '';
+    return `${vendor}-${renderer}`.slice(0, 80);
+  } catch (e) { return 'no-webgl'; }
+}
+
+function getInstalledFonts() {
+  const baseFonts = ['Arial', 'Verdana', 'Times New Roman', 'Courier New'];
+  const testString = 'mmmmmmmmmlli';
+  const testSize = '72px';
+  const h = document.getElementsByTagName('body')[0];
+  const s = document.createElement('div');
+  const defaultWidth = {};
+  const defaultHeight = {};
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
+  s.style.fontSize = testSize;
+  h.appendChild(s);
+  for (let i = 0; i < baseFonts.length; i++) {
+    s.style.fontFamily = baseFonts[i];
+    defaultWidth[baseFonts[i]] = ctx.measureText(testString).width;
+    defaultHeight[baseFonts[i]] = ctx.measureText(testString).height;
+  }
+  h.removeChild(s);
+  return Object.keys(defaultWidth).join(',');
+}
+
+async function getAudioFingerprint() {
+  try {
+    const AudioContext = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContext) return 'no-audio';
+    const context = new AudioContext();
+    const oscillator = context.createOscillator();
+    const analyser = context.createAnalyser();
+    const gain = context.createGain();
+    oscillator.connect(gain);
+    gain.connect(analyser);
+    oscillator.start(0);
+    const data = new Float32Array(analyser.fftSize);
+    analyser.getFloatFrequencyData(data);
+    return data.slice(0, 10).join(',');
+  } catch (e) { return 'no-audio'; }
+}
+
 function _clearTaken(el) {
   const f = el && el.closest(".field");
   if (!f) return;
@@ -634,9 +709,15 @@ async function handleSignup(e) {
       return;
     }
   } catch (e) { /* check endpoint hiccup — /signup will decide anyway */ }
+
+  // Collect strong device fingerprint for abuse prevention
+  const fingerprint = await generateDeviceFingerprint();
   btnBusy(btn);
   try {
-    const res = await api("/signup", "POST", { username, email, password, agreed_terms: true });
+    const res = await api("/signup", "POST", { 
+      username, email, password, agreed_terms: true,
+      fingerprint: fingerprint
+    });
     signupUsername = username;
     localStorage.setItem("ahad_signup_username", username);
     localStorage.setItem("ahad_signup_email", email);

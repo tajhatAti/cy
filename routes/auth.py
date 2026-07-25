@@ -65,8 +65,27 @@ def signup(user: UserSignup, request: Request):
     if user.agreed_terms is not True:
         raise HTTPException(status_code=400, detail="Please accept the Terms of Use to create an account.")
 
+    # Simple CAPTCHA check (7 + 5 = 12)
+    if getattr(user, 'captcha', None) != "12":
+        raise HTTPException(status_code=400, detail="CAPTCHA verification failed.")
+
+    # Store fingerprint if provided (for abuse detection)
+    fingerprint = getattr(user, 'fingerprint', None)
+
     username = validate_username(user.username)
     email = str(user.email).strip().lower()
+    if not email.endswith("@gmail.com"):
+        raise HTTPException(status_code=400, detail="Only Gmail addresses are currently supported for email sign-up. You can also sign in with Telegram.")
+
+    # Disposable / Temp mail blocklist
+    disposable_domains = [
+        "tempmail.com", "10minutemail.com", "mailinator.com", "guerrillamail.com",
+        "yopmail.com", "throwawaymail.com", "maildrop.cc", "temp-mail.org",
+        "fakeinbox.com", "mailcatch.com", "inbox.lv", "mail.ru"
+    ]
+    domain = email.split("@")[-1]
+    if domain in disposable_domains:
+        raise HTTPException(status_code=400, detail="Disposable email addresses are not allowed.")
     password = validate_password(user.password)
 
     otp = generate_otp()
@@ -574,3 +593,69 @@ def verify_2fa_login(payload: TwoFactorVerify, authorization: Optional[str] = He
 # ----------------------------
 # Login History
 # ----------------------------
+
+
+# ----------------------------\n# Telegram Login (Widget)\n# ----------------------------\n
+import hashlib
+import hmac
+
+class TelegramAuthData(BaseModel):
+    id: int
+    first_name: str
+    username: Optional[str] = None
+    photo_url: Optional[str] = None
+    auth_date: int
+    hash: str
+
+@router.post("/auth/telegram")
+def telegram_login(payload: TelegramAuthData, request: Request):
+    rate_limit(f"{client_ip(request)}:telegram_login")
+
+    bot_token = os.getenv("TELEGRAM_PING_BOT_TOKEN", "").strip()
+    if not bot_token:
+        raise HTTPException(status_code=500, detail="Telegram login not configured.")
+
+    # Verify HMAC-SHA256
+    secret_key = hashlib.sha256(bot_token.encode()).digest()
+    data_check = "\n".join(
+        f"{k}={v}" for k, v in sorted(
+            {"id": payload.id, "first_name": payload.first_name,
+             "username": payload.username or "", "photo_url": payload.photo_url or "",
+             "auth_date": payload.auth_date},
+            key=lambda x: x[0]
+        )
+        if v
+    )
+    calculated_hash = hmac.new(secret_key, data_check.encode(), hashlib.sha256).hexdigest()
+    if calculated_hash != payload.hash:
+        raise HTTPException(status_code=400, detail="Invalid Telegram authentication data.")
+
+    conn = get_db_connection()
+    try:
+        row = conn.execute("SELECT * FROM users WHERE telegram_id = ?", (payload.id,)).fetchone()
+
+        if row:
+            if row.get("is_suspended"):
+                raise HTTPException(status_code=403, detail="Account is suspended.")
+            token = create_session(row["id"], request)
+            return {"message": "Login successful via Telegram", "token": token, "username": row["username"]}
+
+        # Create new account
+        username = f"tg_{payload.id}"
+        email = f"tg_{payload.id}@telegram.user"
+        password = hash_password(secrets.token_urlsafe(16))
+        current_time = now_utc_str()
+
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO users (username, email, password, is_verified, telegram_id, created_at, updated_at)
+            VALUES (?, ?, ?, 1, ?, ?, ?)
+        """, (username, email, password, payload.id, current_time, current_time))
+        conn.commit()
+        user_id = cursor.lastrowid
+
+        token = create_session(user_id, request)
+        return {"message": "Account created via Telegram", "token": token, "username": username}
+    finally:
+        conn.close()
+

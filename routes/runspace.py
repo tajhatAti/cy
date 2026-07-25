@@ -121,6 +121,36 @@ def create_job(payload: JobCreateRequest, request: Request, authorization: Optio
     user, _ = get_current_user_and_session(authorization)
     rate_limit_user(user["id"], "exec")
 
+    # === DEVICE FINGERPRINT BASED LIMIT (PRIMARY DEFENSE) ===
+    fp = request.headers.get("X-Fingerprint", "")[:300]
+    ip = client_ip(request)
+
+    conn = get_db_connection()
+    try:
+        # Update user's fingerprint and IP
+        conn.execute("UPDATE users SET fingerprint=?, last_ip=? WHERE id=?",
+                     (fp, ip, user["id"]))
+
+        # Fingerprint-level job limit (3 jobs per device, not per account)
+        if fp:
+            running_jobs = conn.execute("""
+                SELECT COUNT(*) as c 
+                FROM jobs j 
+                JOIN users u ON j.user_id = u.id 
+                WHERE u.fingerprint = ? 
+                AND j.status IN ('running', 'starting', 'installing')
+            """, (fp,)).fetchone()["c"]
+
+            if running_jobs >= 3:
+                raise HTTPException(
+                    status_code=429, 
+                    detail="Device limit reached: Maximum 3 concurrent jobs per device"
+                )
+
+        conn.commit()
+    finally:
+        conn.close()
+
     name = (payload.name or "").strip()[:60]
     repo_url = (payload.repo_url or "").strip()
     entry = (payload.entry or "").strip()

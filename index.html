@@ -285,6 +285,14 @@
         <span class="strength-label" id="strengthLabel"></span>
       </label>
       <label class="tos-check"><input type="checkbox" id="su_terms"><span>I agree to the <a href="/terms" onclick="event.preventDefault();event.stopPropagation();window.open('/terms','_blank','noopener')"><b>Terms of Use</b></a> — no illegal content, no crypto-mining, no spam, and no abuse of public URLs.</span></label>
+
+      <!-- Simple CAPTCHA for abuse prevention -->
+      <div class="captcha-box">
+        <label class="field"><span>CAPTCHA: What is 7 + 5?</span>
+          <input type="text" id="su_captcha" placeholder="12" maxlength="2" required>
+        </label>
+      </div>
+
       <button type="submit" class="btn-primary block" id="btnSignup"><span>Create account</span></button>
     </form>
     <p class="auth-switch">Already have an account? <a onclick="showScreen('screen-signin')">Sign in</a></p>
@@ -308,6 +316,18 @@
       </div>
       <button type="submit" class="btn-primary block" id="btnSignin"><span>Sign in</span></button>
     </form>
+
+    <!-- Telegram Login Widget -->
+    <div class="telegram-login">
+      <div class="auth-or"><span>or</span></div>
+      <script async src="https://telegram.org/js/telegram-widget.js?22" 
+              data-telegram-login="YOUR_BOT_USERNAME" 
+              data-size="large" 
+              data-auth-url="/auth/telegram"
+              data-request-access="write"></script>
+      <p class="telegram-hint">Sign in with your Telegram account</p>
+    </div>
+
     <p class="auth-switch">New here? <a onclick="showScreen('screen-signup')">Create an account</a></p>
   </div>
 </div>
