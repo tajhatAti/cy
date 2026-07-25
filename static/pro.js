@@ -2479,25 +2479,129 @@ function _updateJobUrl(job) {
 }
 
 // ─── Jobs data ────────────────────────────────────────────────────────
+// State machine for the jobs sidebar. One of:
+//   'idle'     — boot: tab never entered, nothing rendered yet
+//   'loading'  — first fetch (or returning after stale) in flight; show skeleton
+//   'loaded'   — data arrived; render list OR sidebar-empty
+//   'empty'    — confirmed zero jobs server-side
+//   'error'    — fetch failed; show error + retry
+// We never infer state from array length — an empty array while 'loading'
+// must NEVER flash the "no jobs" empty state.
+let _jobsStatus = "idle";
+
+function _setJobsStatus(status) {
+  _jobsStatus = status;
+  // Drive main-pane body visibility off this state so we never flash the
+  // wrong panel while data is in flight.
+  const ws = document.getElementById("wbWorkspace");
+  const emp = document.getElementById("wbEmpty");
+  const boot = document.getElementById("wbBootLoader");
+  const list = document.getElementById("jobsList");
+  const btnNewEmpty = document.getElementById("btnNewEmpty");
+  if (!ws || !emp) return;
+  // Restore CTA button copy (error state swaps in a "Retry" label)
+  if (btnNewEmpty && btnNewEmpty._errLabel) {
+    btnNewEmpty.innerHTML = btnNewEmpty._errLabel;
+    btnNewEmpty._errLabel = null;
+  }
+  if (status === "loading") {
+    ws.style.display = "none";
+    emp.style.display = "none";
+    if (boot) boot.style.display = "";
+    if (btnNewEmpty) btnNewEmpty.style.display = "none";
+    if (list) {
+      // Only paint the skeleton if the list doesn't already have real job
+      // items (stale-while-revalidate: keep old rows visible while we refresh).
+      if (!list.querySelector(".job-item")) list.innerHTML = _skel(4);
+    }
+  } else if (status === "empty") {
+    // Confirmed: zero jobs exist. Show the "No RunSpace yet" panel.
+    ws.style.display = "none";
+    if (boot) boot.style.display = "none";
+    emp.style.display = "";
+    if (btnNewEmpty) btnNewEmpty.style.display = "";
+    // Tweak copy from generic "No job selected" to first-run messaging
+    const t = emp.querySelector(".rs-empty-title");
+    const s = emp.querySelector(".rs-empty-sub");
+    if (t) t.textContent = "No RunSpace yet";
+    if (s) s.textContent = "Create your first 24/7 bot or service — it goes live in seconds.";
+    if (list) list.innerHTML = '<div class="rs-empty-sm" style="padding:16px 12px;text-align:center">No saved jobs yet.</div>';
+  } else if (status === "error") {
+    ws.style.display = "none";
+    if (boot) boot.style.display = "none";
+    emp.style.display = "";
+    if (btnNewEmpty) btnNewEmpty.style.display = "";
+    if (btnNewEmpty) {
+      // Re-style CTA as retry when in error state (save original first)
+      if (!btnNewEmpty._errLabel) btnNewEmpty._errLabel = btnNewEmpty.innerHTML;
+      btnNewEmpty.innerHTML = '<svg viewBox="0 0 24" class="rs-ic-sm" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/></svg> Retry';
+    }
+    const t = emp.querySelector(".rs-empty-title");
+    const s = emp.querySelector(".rs-empty-sub");
+    if (t) t.textContent = "Couldn’t load RunSpace";
+    if (s) s.textContent = "The server may be waking up. Tap Retry in a moment.";
+    // Swap the new-job button handler for a retry handler
+    if (btnNewEmpty && btnNewEmpty && !btnNewEmpty._errWired) {
+      btnNewEmpty._errWired = true;
+      btnNewEmpty.addEventListener("click", (e) => {
+        if (_jobsStatus !== "error") return;
+        e.preventDefault(); e.stopPropagation();
+        loadJobs();
+      });
+    }
+  } else {
+    // loaded — defer to _showWorkspace / _showEmpty / selectJob
+    if (boot) boot.style.display = "none";
+  }
+}
+
 async function loadJobs() {
   const list = document.getElementById("jobsList");
   if (!list) return;
-  // Show shimmer skeleton while the list is empty or we've returned to the tab
-  // and data is stale (>10s old) — gives instant visual feedback on tab switch.
-  const emptyOrStale = !list.children.length ||
-    !list.querySelector(".job-item") ||
-    (_lastJobsTs && Date.now() - _lastJobsTs > 10000);
-  if (emptyOrStale) list.innerHTML = _skel(Math.min(6, (window._lastJobs||[]).length || 4));
+  // Always enter 'loading' first. Stale-while-revalidate: if we already have
+  // job rows on screen from a previous successful load, leave them in place
+  // instead of swapping to skeleton (avoids flicker). Only show skeleton
+  // when there is no prior content.
+  const hasPrior = !!(window._lastJobs && window._lastJobs.length) || !!list.querySelector(".job-item");
+  if (!hasPrior) _setJobsStatus("loading"); else _jobsStatus = "loading";
+
   try {
     const data = await api("/api/jobs", "GET", null, true);
     const jobs = (data && data.jobs) || [];
     const sig = jobs.map(j => [j.id, j.status, j.restarts, j.web ? 1 : 0, j.web_public === false ? 0 : 1].join(":")).join("|");
-    if (sig !== _lastJobsSig) { _lastJobsSig = sig; renderJobs(jobs); }
     _lastJobsTs = Date.now();
+    if (jobs.length === 0) {
+      // Confirmed zero — render once, preserve sig
+      _lastJobsSig = sig;
+      _setJobsStatus("empty");
+      _showEmpty(true);
+      return;
+    }
+    _setJobsStatus("loaded");
+    if (sig !== _lastJobsSig) { _lastJobsSig = sig; renderJobs(jobs); }
+    else {
+      // Sig matched (nothing changed) — still make sure the right main
+      // pane is visible: if we had a selected job, show workspace; else
+      // show the "No job selected" empty panel (different copy from zero-jobs).
+      if (_selectedJobId) {
+        const cur = jobs.find(x => String(x.id) === String(_selectedJobId));
+        if (cur) { _showWorkspace(cur); _updateJobUrl(cur); }
+        else { _selectedJobId = null; _showEmpty(false); }
+      } else {
+        _showEmpty(false);
+      }
+    }
   } catch (e) {
+    if (e && e.kind === "infra") {
+      // Server waking up — keep skeleton + banner (thrown by api() already)
+      // but DO NOT switch to error/empty state; retry via polling.
+      if (!hasPrior && list) list.innerHTML = _skel(3);
+      return;
+    }
     const sig = "ERR:" + e.message;
     if (sig === _lastJobsSig) return;
     _lastJobsSig = sig;
+    _setJobsStatus("error");
     _loadErrorBox(list, "deployments", loadJobs, e);
   }
 }
@@ -2592,8 +2696,10 @@ function _renderLogs(text) {
 function _showWorkspace(job) {
   const emp = document.getElementById("wbEmpty");
   const ws = document.getElementById("wbWorkspace");
+  const boot = document.getElementById("wbBootLoader");
   if (emp) emp.style.display = "none";
   if (ws)  ws.style.display = "flex";
+  if (boot) boot.style.display = "none";
   _reflectJobStatus(job);
   _jobCmRefresh();
 }
@@ -2612,11 +2718,30 @@ function _clearWorkspaceChrome() {
   if (btnStop) btnStop.style.display = "none";
   if (btnRest) btnRest.style.display = "none";
 }
-function _showEmpty() {
+function _showEmpty(zeroJobs) {
   const emp = document.getElementById("wbEmpty");
   const ws  = document.getElementById("wbWorkspace");
+  const boot = document.getElementById("wbBootLoader");
+  const btnNewEmpty = document.getElementById("btnNewEmpty");
+  // While jobs are still loading, DO NOT reveal the empty panel — the caller
+  // (loadJobs) will flip the state itself once data is confirmed.
+  if (_jobsStatus === "loading") {
+    if (ws) ws.style.display = "none";
+    if (emp) emp.style.display = "none";
+    if (boot) boot.style.display = "";
+    if (btnNewEmpty) btnNewEmpty.style.display = "none";
+    return;
+  }
   if (emp) emp.style.display = "";
   if (ws)  ws.style.display = "none";
+  if (boot) boot.style.display = "none";
+  if (btnNewEmpty) btnNewEmpty.style.display = "";
+  const t = emp && emp.querySelector(".rs-empty-title");
+  const s = emp && emp.querySelector(".rs-empty-sub");
+  if (t) t.textContent = zeroJobs ? "No RunSpace yet" : "No job selected";
+  if (s) s.textContent = zeroJobs
+    ? "Create your first 24/7 bot or service — it goes live in seconds."
+    : "Create a new job or pick one from the left to start editing.";
   const n = document.getElementById("jobName"); if (n) n.value = "";
   const langEl = document.getElementById("jobLang");
   if (langEl) langEl.value = "python";
@@ -2757,7 +2882,7 @@ function deselectJob() {
   _updateStats();
   _setHint("", "Ready");
   document.body.classList.remove("rs-logs-open");
-  _showEmpty();
+  _showEmpty(false);
 }
 
 async function fetchJobDetail(id) {
@@ -2766,7 +2891,7 @@ async function fetchJobDetail(id) {
     const r = await fetch("/api/jobs/" + id, {
       headers: token ? {"Authorization": "Bearer " + token} : {}
     });
-    if (!r.ok) { _showEmpty(); return; }
+    if (!r.ok) { _showEmpty(false); return; }
     const job = await r.json();
     window._lastJobs = window._lastJobs || [];
     const idx = window._lastJobs.findIndex(x => String(x.id) === String(id));
@@ -2790,7 +2915,7 @@ async function fetchJobDetail(id) {
     // If the detail drawer is open, re-render it with the new job's data so
     // clicking a different job in the sidebar swaps the drawer content too.
     if (_jdOpen) { renderJobDetails(); }
-  } catch (e) { _showEmpty(); }
+  } catch (e) { _showEmpty(false); }
 }
 
 function stopLogStream() {
@@ -2861,9 +2986,13 @@ function renderJobs(jobs) {
   void list.offsetWidth; // reflow to restart animation
   list.classList.add("rs-fade-in");
   if (!jobs.length) {
-    if (!_selectedJobId) _showEmpty();
+    // Confirmed zero jobs server-side
+    _setJobsStatus("empty");
+    if (!_selectedJobId) _showEmpty(true);
     return;
   }
+  // Data loaded — make sure boot loader is gone
+  _setJobsStatus("loaded");
   jobs.forEach((j, i) => {
     const st = _fmtStatus(j.status);
     const stKey = (j.status || "").toLowerCase();
@@ -2912,7 +3041,7 @@ function renderJobs(jobs) {
     const running = jobs.find(x => (x.status||"").toLowerCase() === "running");
     const pick = running || jobs[0];
     if (pick) selectJob(pick.id);
-    else _showEmpty();
+    else _showEmpty(false);
   } else {
     const cur = jobs.find(x => String(x.id) === String(_selectedJobId));
     if (cur) { _showWorkspace(cur); _updateJobUrl(cur); }
@@ -3630,20 +3759,23 @@ function stopJobPolling()   { if (_jobsTimer) { clearInterval(_jobsTimer); _jobs
   window.switchTab = function(tabId) {
     const r = orig.apply(this, arguments);
     if (tabId === "jobs") {
-      // Force a fresh fetch immediately on tab entry (skeleton shows first,
-      // data fills in) — this makes the tab feel alive every time you come back.
+      // If we have no prior data at all, enter 'loading' immediately so the
+      // boot skeleton is painted on top of the empty panel before loadJobs
+      // fires (prevents the premature "No job selected" flash). Stale cache
+      // stays visible via stale-while-revalidate inside loadJobs.
+      const hasPrior = !!(window._lastJobs && window._lastJobs.length);
+      if (!hasPrior) _setJobsStatus("loading");
       _lastJobsTs = 0;
       startJobPolling();
       const cmRefresh = () => {
         try {
           initJobCodeMirror();
           _jobCmRefresh();
-          // CM sometimes needs two rAFs to recalc after flex layout settles
           requestAnimationFrame(() => requestAnimationFrame(_jobCmRefresh));
         } catch(e){}
       };
       setTimeout(cmRefresh, 30);
-      setTimeout(cmRefresh, 200);   // safe double-tap after slide-in anim ends
+      setTimeout(cmRefresh, 200);
     }
     return r;
   };

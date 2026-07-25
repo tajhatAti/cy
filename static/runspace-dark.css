@@ -845,6 +845,55 @@ body.rs-detail-open #tab-jobs .rs-detail { z-index: 145; }
 .rs-main-skel .rs-skel.w60 { width: 60%; }
 .rs-main-skel .rs-skel.w40 { width: 40%; }
 .rs-main-skel .rs-skel.code { height: calc(100% - 60px); min-height: 180px; border-radius: 6px !important; }
+
+/* Boot skeleton that fills the main pane while the FIRST jobs fetch is in
+   flight — replaces the "No job selected" empty card so users never see the
+   premature "Create new job" CTA before we know whether they have jobs. */
+#tab-jobs .rs-boot-loader {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 10px;
+  gap: 10px;
+  animation: rsFadeIn .18s ease both;
+}
+/* When boot loader is the visible main-pane child it should match the empty
+   state centering so it fills rs-main vertically. */
+#tab-jobs .rs-main > .rs-boot-loader {
+  padding: 20px;
+}
+#tab-jobs .rs-main > .rs-boot-loader .rs-bl-editor {
+  flex: 1 1 auto;
+  min-height: 200px;
+}
+#tab-jobs .rs-boot-loader .rs-bl-bar {
+  display: flex; align-items: center; gap: 10px;
+  flex: 0 0 34px; height: 34px;
+  background: #161b22;
+  border: 1px solid #21262d;
+  border-radius: 6px !important;
+  padding: 0 10px;
+}
+#tab-jobs .rs-boot-loader .rs-bl-editor {
+  flex: 1 1 auto; min-height: 140px;
+  background: #0d1117;
+  border: 1px solid #21262d;
+  border-radius: 6px !important;
+  padding: 10px;
+  display: flex;
+}
+#tab-jobs .rs-boot-loader .rs-bl-editor .rs-skel.code {
+  flex: 1; height: 100%; min-height: 120px; border-radius: 4px !important;
+}
+#tab-jobs .rs-boot-loader .rs-bl-logs {
+  flex: 0 0 80px; height: 80px;
+  background: #010409;
+  border: 1px solid #21262d;
+  border-radius: 6px !important;
+  padding: 10px;
+  display: flex; flex-direction: column; justify-content: flex-start;
+}
 .rs-skel-dot {
   width: 8px; height: 8px; border-radius: 50% !important; flex-shrink: 0;
   background: #21262d; animation: rsShimmer 1.2s linear infinite;
