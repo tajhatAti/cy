@@ -303,6 +303,19 @@ async def job_logs_stream(job_id: int, token: Optional[str] = None):
         except Exception:
             pass
         conn.execute("UPDATE sessions SET last_seen = ? WHERE id = ?", (now_utc_str(), session_row["id"]))
+        # Sliding expiry mirror (same logic as get_current_user_and_session)
+        try:
+            from datetime import datetime, timezone, timedelta as _td
+            from routes.deps import SESSION_TTL_DAYS
+            exp_str = session_row["expires_at"] if "expires_at" in session_row.keys() else None
+            if exp_str:
+                exp_d = datetime.strptime(exp_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+                now_d = datetime.now(timezone.utc)
+                if exp_d - now_d < _td(days=SESSION_TTL_DAYS - 1):
+                    new_exp = (now_d + _td(days=SESSION_TTL_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
+                    conn.execute("UPDATE sessions SET expires_at = ? WHERE id = ?", (new_exp, session_row["id"]))
+        except Exception:
+            pass
         conn.commit()
         user_row = conn.execute("SELECT * FROM users WHERE id = ?", (session_row["user_id"],)).fetchone()
         if not user_row:
