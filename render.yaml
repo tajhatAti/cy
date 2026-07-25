@@ -1,61 +1,78 @@
 # render.yaml — Render Auto-Deploy Configuration
 # ==============================================
-# 🚀 SINGLE-SERVICE DEPLOY (default): ONE web service runs everything —
-#    the site, the in-process job runner, and the public /live/{slug}/
-#    gateway. It needs the Docker image (language toolchains for user jobs),
-#    so `runtime: docker` + the repo-root Dockerfile are mandatory.
+# 🚀 DEFAULT (single service): ONE web service runs everything —
+#    the site (dashboard, auth, saved code), the in-process job runner,
+#    and the public /live/{slug}/ gateway. Needs the Docker image at the
+#    repo root. Embedded mode activates automatically when RUNNER_SERVICE_URL
+#    is NOT set.
 #
-#    Embedded mode activates automatically: as long as RUNNER_SERVICE_URL is
-#    NOT set, jobs spawn inside this process. (Want the old two-service
-#    layout instead? Deploy runner/ as its own service and set
-#    RUNNER_SERVICE_URL + RUNNER_SERVICE_SECRET here — the app switches.)
+# 📦 TWO-SERVICE LAYOUT (recommended for production / 2nd host):
+#    Keep THIS service as the dashboard + DB + saved-code main site, and
+#    deploy runner/ (its own render.yaml) as a SECOND Render web service
+#    (can be on a second Render account). Then set these two env vars on
+#    THIS service:
+#        RUNNER_SERVICE_URL  = https://ahad-code-runner.onrender.com
+#        RUNNER_SERVICE_SECRET = <same strong random string on BOTH services>
+#    When those are set, the main site proxies all code execution / jobs
+#    to the second host. The main site is your Dashboard & Code Saved host;
+#    the second is your RunSpace execution host.
 #
-# 📌 PERMANENT DATA with Supabase (PostgreSQL free tier):
-#    Supabase Dashboard → Project Settings → Database → Connection string
-#    (Session pooler, port 5432) → paste as DATABASE_URL below in the Render
-#    dashboard. With DATABASE_URL set, data is permanent — no disk needed.
+# 💾 DATA PERSISTENCE:
+#    • DATABASE_URL (Supabase Postgres) → permanent user accounts & saved code.
+#    • Bot databases (SQLite / JSON files created by deployed bots) live in
+#      /app/data/jobs/<job_id>/ inside the RUNNER container. Mount a Render
+#      Persistent Disk at /app/data on the runner (paid Starter plan) to
+#      keep those files across full rebuilds; code edits & restarts always
+#      preserve them regardless of plan.
+#
+# 🔁 "Edit code & redeploy" never wipes user bot data — it does an in-place
+#    PATCH that only overwrites main.*; database.db, session.json, data/*
+#    and pip-installed pylibs/ are left intact. Referral bots, scraper
+#    state, bot progress — all safe.
+# ==================================================================
 
 services:
   - type: web
-    name: ahad-co-auth
-    runtime: docker                    # root Dockerfile = web + embedded runner
+    name: ahad-co-auth           # Main dashboard + saved-code host
+    runtime: docker              # root Dockerfile = web (+ embedded runner if RUNNER_SERVICE_URL unset)
     dockerfilePath: ./Dockerfile
     plan: free
     region: singapore
-    autoDeploy: true                   # deploys on every push to main
+    autoDeploy: true             # deploys on every push to main
 
     envVars:
-      - key: DATABASE_URL              # ⚠️ REQUIRED for permanent data (Supabase)
+      # ── Database ──────────────────────────────────────────
+      - key: DATABASE_URL        # ⚠️ REQUIRED for permanent data (Supabase session pooler, port 5432)
         sync: false
 
-      - key: SITE_BASE_URL             # this service's own public URL — used to
-        sync: false                    # build job URLs: {SITE_BASE_URL}/live/{slug}/
-                                       # e.g. https://ahad-co-auth.onrender.com
-
-      - key: ADMIN_EMAILS              # comma-separated owner emails → is_admin
-        sync: false                    # granted automatically at login
-
-      - key: BREVO_API_KEY             # OTP email delivery
+      # ── Public URLs ──────────────────────────────────────
+      - key: SITE_BASE_URL       # THIS service's public URL (e.g. https://ahad-co-auth.onrender.com)
         sync: false
 
+      # ── Auth / admin ─────────────────────────────────────
+      - key: ADMIN_EMAILS        # comma-separated owner emails → auto-granted admin
+        sync: false
+
+      # ── Email (OTP) ──────────────────────────────────────
+      - key: BREVO_API_KEY
+        sync: false
       - key: SENDER_EMAIL
         sync: false
-
       - key: SENDER_NAME
         value: Ahad Co
-
       - key: OTP_EXPIRY_MINUTES
         value: "10"
 
+      # ── Postgres SSL ─────────────────────────────────────
       - key: PG_SSLMODE
         value: prefer
 
-      # ── intentionally UNSET: RUNNER_SERVICE_URL / RUNNER_SERVICE_SECRET ──
-      # (leaving them unset is what turns the embedded runner ON)
+      # ── Two-service layout (OPTIONAL — leave BOTH unset for
+      #    single-service embedded mode, which is the default) ──
+      # - key: RUNNER_SERVICE_URL     # https://ahad-code-runner.onrender.com
+      #   sync: false
+      # - key: RUNNER_SERVICE_SECRET  # same value as on the runner
+      #   sync: false
 
     # Health check
     healthCheckPath: /health
-
-# Two-service layout (optional, not needed by default):
-#   deploy runner/ with runner/Dockerfile as a second web service,
-#   then set RUNNER_SERVICE_URL + RUNNER_SERVICE_SECRET on this one.

@@ -2,16 +2,28 @@
 <html lang="en" class="booting">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <meta name="theme-color" content="#171309">
-<title>Ahad Co — RunSpace · Free Bot Hosting</title>
+<title>CodeNest — RunSpace · Free Bot Hosting</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,500;0,9..144,560;0,9..144,600;1,9..144,500;1,9..144,560&family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/pro.css?v=20260719g">
-<link rel="stylesheet" href="/static/emoji.css?v=20260719g">
-<!-- Ahad Classic theme (editorial minimal) — loaded LAST so it wins the cascade -->
-<link rel="stylesheet" href="/static/classic.css?v=20260719g">
+<link rel="stylesheet" href="/static/pro.css?v=20260724k">
+<link rel="stylesheet" href="/static/emoji.css?v=20260724k">
+<!-- Ahad Classic theme (editorial minimal) — base styles first -->
+<link rel="stylesheet" href="/static/classic.css?v=20260724k">
+<!-- CodeNest · RunSpace workbench UI -->
+<link rel="stylesheet" href="/static/workbench.css?v=20260724k">
+<!-- Code Studio signature editor (warm amber, fixes white-flash) -->
+<link rel="stylesheet" href="/static/codestudio.css?v=20260724k">
+<!-- Termux-style PTY terminal panel -->
+<link rel="stylesheet" href="/static/terminal.css?v=20260724k">
+<!-- RunSpace GitHub-dark raw theme -->
+<link rel="stylesheet" href="/static/runspace-dark.css?v=20260724k">
+<!-- xterm.js (browser terminal emulator for the live PTY) -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css">
+<script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"></script>
 <!-- CodeMirror IDE Editor CSS & JS -->
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
@@ -23,6 +35,11 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/clike/clike.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/markdown/markdown.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/shell/shell.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/ruby/ruby.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/php/php.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/edit/closebrackets.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/edit/matchbrackets.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/comment/comment.min.js"></script>
 <script>
   // Boot guard — prevents a flash of the wrong screen before JS decides.
   (function () {
@@ -38,9 +55,117 @@
 </head>
 <body>
 
+<!-- SVG ICON SPRITE (custom line icons — Phosphor-style, 1.7px stroke, recognizable & larger) -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+<defs>
+  <symbol id="i-menu" viewBox="0 0 24 24">
+    <path d="M4 6h16M4 12h16M4 18h16" stroke-linecap="round"/>
+  </symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24">
+    <path d="M12 5v14M5 12h14" stroke-linecap="round"/>
+  </symbol>
+  <symbol id="i-square-plus" viewBox="0 0 24 24">
+    <rect x="4" y="4" width="16" height="16" rx="2.5"/>
+    <path d="M12 9v6M9 12h6" stroke-linecap="round"/>
+  </symbol>
+  <symbol id="i-x" viewBox="0 0 24 24">
+    <path d="M6 6l12 12M18 6L6 18" stroke-linecap="round"/>
+  </symbol>
+  <symbol id="i-play" viewBox="0 0 24 24">
+    <path d="M7 5.5v13c0 .7.8 1.2 1.4.8l11-6.5c.6-.4.6-1.3 0-1.7l-11-6.5c-.6-.3-1.4.1-1.4.9z" stroke-linejoin="round"/>
+  </symbol>
+  <symbol id="i-rocket" viewBox="0 0 24 24">
+    <path d="M14.5 3.5c3 0 6 3 6 6l-5.5 5.5-5-1.5-4 4-1.5-1.5 4-4-1.5-5z" stroke-linejoin="round"/>
+    <circle cx="15.5" cy="8.5" r="1.3"/>
+    <path d="M9 15l-3 3 3-.5.5-3z" stroke-linejoin="round"/>
+    <path d="M15 10l4-4" stroke-linecap="round"/>
+    <path d="M11.5 16.5l-3 3c-.5-.5-.8-1.7-.3-2.7.5-1.1 1.6-1.6 2.3-1.3" class="i-flame" stroke-linecap="round" stroke-linejoin="round"/>
+  </symbol>
+  <symbol id="i-stop" viewBox="0 0 24 24">
+    <rect x="6.5" y="6.5" width="11" height="11" rx="1.5"/>
+  </symbol>
+  <symbol id="i-restart" viewBox="0 0 24 24">
+    <path d="M3 12a9 9 0 0 1 15.5-6.3"/>
+    <path d="M21 3v6h-6" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M21 12a9 9 0 0 1-15.5 6.3" opacity=".35"/>
+  </symbol>
+  <symbol id="i-edit" viewBox="0 0 24 24">
+    <path d="M12 20h9" stroke-linecap="round"/>
+    <path d="M16.5 3.5a2.1 2.1 0 1 1 3 3L7 19l-4 1 1-4L16.5 3.5z" stroke-linecap="round" stroke-linejoin="round"/>
+  </symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24">
+    <path d="M3 6h18" stroke-linecap="round"/>
+    <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" stroke-linecap="round"/>
+    <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M10 11v6M14 11v6" stroke-linecap="round"/>
+  </symbol>
+  <symbol id="i-git" viewBox="0 0 24 24">
+    <circle cx="6" cy="6" r="2.2"/>
+    <circle cx="6" cy="18" r="2.2"/>
+    <circle cx="18" cy="12" r="2.2"/>
+    <path d="M6 8v8" stroke-linecap="round"/>
+    <path d="M6 12a6 6 0 0 0 6 6" stroke-linecap="round"/>
+  </symbol>
+  <symbol id="i-download" viewBox="0 0 24 24">
+    <path d="M12 3v12" stroke-linecap="round"/>
+    <path d="M7 10l5 5 5-5" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M5 21h14" stroke-linecap="round"/>
+  </symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24">
+    <rect x="9" y="9" width="11" height="11" rx="2"/>
+    <path d="M5 15V6a2 2 0 0 1 2-2h9" stroke-linecap="round" stroke-linejoin="round"/>
+  </symbol>
+  <symbol id="i-bottom" viewBox="0 0 24 24">
+    <path d="M7 7l5 5 5-5M7 13l5 5 5-5" stroke-linecap="round" stroke-linejoin="round"/>
+  </symbol>
+  <symbol id="i-check" viewBox="0 0 24 24">
+    <path d="M5 12l5 5L20 7" stroke-linecap="round" stroke-linejoin="round"/>
+  </symbol>
+  <symbol id="i-code" viewBox="0 0 24 24">
+    <path d="M8 6l-5 6 5 6M16 6l5 6-5 6M14 4l-4 16" stroke-linecap="round" stroke-linejoin="round"/>
+  </symbol>
+  <symbol id="i-save" viewBox="0 0 24 24">
+    <path d="M5 4h11l3 3v13H5z" stroke-linejoin="round"/>
+    <path d="M8 4v5h7V4"/>
+    <rect x="8" y="12" width="8" height="7" rx="1"/>
+  </symbol>
+  <symbol id="i-terminal" viewBox="0 0 24 24">
+    <rect x="3" y="4" width="18" height="16" rx="2"/>
+    <path d="M7 9l3 3-3 3M12 15h5" stroke-linecap="round" stroke-linejoin="round"/>
+  </symbol>
+  <symbol id="i-bolt" viewBox="0 0 24 24">
+    <path d="M13 2L4 14h7l-1 8 9-12h-7l1-8z" stroke-linejoin="round"/>
+  </symbol>
+  <symbol id="i-server" viewBox="0 0 24 24">
+    <rect x="3" y="4" width="18" height="7" rx="2"/>
+    <rect x="3" y="13" width="18" height="7" rx="2"/>
+    <circle cx="7" cy="7.5" r="0.9" fill="currentColor"/>
+    <circle cx="7" cy="16.5" r="0.9" fill="currentColor"/>
+    <path d="M11 7.5h5M11 16.5h5" stroke-linecap="round"/>
+  </symbol>
+  <symbol id="i-folder" viewBox="0 0 24 24">
+    <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" stroke-linejoin="round"/>
+  </symbol>
+  <symbol id="i-fullscreen" viewBox="0 0 24 24">
+    <path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" stroke-linecap="round" stroke-linejoin="round"/>
+  </symbol>
+  <symbol id="i-format" viewBox="0 0 24 24">
+    <path d="M4 7h16M7 12h10M10 17h4" stroke-linecap="round"/>
+  </symbol>
+  <symbol id="i-eye" viewBox="0 0 24 24">
+    <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z" stroke-linejoin="round"/>
+    <circle cx="12" cy="12" r="3"/>
+  </symbol>
+  <symbol id="i-search" viewBox="0 0 24 24">
+    <circle cx="11" cy="11" r="7"/>
+    <path d="m20 21-4.3-4.3" stroke-linecap="round"/>
+  </symbol>
+</defs>
+</svg>
+
 <!-- Boot splash -->
 <div class="boot-splash" id="bootSplash">
-  <div class="boot-logo">AC</div>
+  <div class="boot-logo"><object type="image/svg+xml" data="/static/codenest-mark.svg?v=20260724k" aria-label="CodeNest"></object></div>
   <div class="boot-spinner"></div>
   <div class="boot-text">Securing your session…</div>
 </div>
@@ -49,8 +174,8 @@
 <nav class="nav">
   <div class="nav-inner">
     <div class="brand" onclick="showScreen('screen-landing')">
-      <div class="brand-mark">AC</div>
-      <span class="brand-text">Ahad&nbsp;Co</span>
+      <div class="brand-mark"><object type="image/svg+xml" data="/static/codenest-mark.svg?v=20260724k" aria-label="CodeNest"></object></div>
+      <span class="brand-text">CodeNest</span>
     </div>
     <div class="nav-links">
       <a class="nav-link" onclick="showScreen('screen-landing')">Overview</a>
@@ -101,6 +226,7 @@
         <div class="gc-foot">python · requests auto-installed · restarts itself</div>
       </div>
     </div>
+    </div>
   </div>
 </section>
 
@@ -138,8 +264,8 @@
 
 <footer class="foot">
   <div class="foot-inner">
-    <div class="brand"><div class="brand-mark sm">AC</div><span class="brand-text">Ahad Co</span></div>
-    <p>© 2026 Ahad Co · Free code hosting. · <a href="/report-abuse" style="color:inherit">Report abuse</a></p>
+    <div class="brand"><div class="brand-mark sm"><object type="image/svg+xml" data="/static/codenest-mark.svg?v=20260724k" aria-label="CodeNest"></object></div><span class="brand-text">CodeNest</span></div>
+    <p>© 2026 CodeNest · Free code hosting. · <a href="/report-abuse" style="color:inherit">Report abuse</a></p>
   </div>
 </footer>
 
@@ -148,7 +274,7 @@
   <div class="auth-card">
     <button class="back" onclick="showScreen('screen-landing')">← Back</button>
     <div class="auth-head">
-      <div class="brand-mark lg">AC</div>
+      <div class="brand-mark lg"><object type="image/svg+xml" data="/static/codenest-mark.svg?v=20260724k" aria-label="CodeNest"></object></div>
       <h2>Create your account</h2>
     </div>
     <form id="formSignup" class="auth-form">
@@ -170,7 +296,7 @@
   <div class="auth-card">
     <button class="back" onclick="showScreen('screen-landing')">← Back</button>
     <div class="auth-head">
-      <div class="brand-mark lg">AC</div>
+      <div class="brand-mark lg"><object type="image/svg+xml" data="/static/codenest-mark.svg?v=20260724k" aria-label="CodeNest"></object></div>
       <h2>Sign in</h2>
     </div>
     <form id="formSignin" class="auth-form">
@@ -191,7 +317,7 @@
   <div class="auth-card">
     <button class="back" onclick="showScreen('screen-signin')">← Back</button>
     <div class="auth-head">
-      <div class="brand-mark lg">AC</div>
+      <div class="brand-mark lg"><object type="image/svg+xml" data="/static/codenest-mark.svg?v=20260724k" aria-label="CodeNest"></object></div>
       <h2>Verify your email</h2>
       <p id="otpEmailNote">Enter the 6-digit code sent to your email.</p>
     </div>
@@ -212,7 +338,7 @@
 <div class="auth" id="screen-forgot1">
   <div class="auth-card">
     <button class="back" onclick="showScreen('screen-signin')">← Back</button>
-    <div class="auth-head"><div class="brand-mark lg">AC</div><h2>Reset password</h2><p>We'll email you a 6-digit code.</p></div>
+    <div class="auth-head"><div class="brand-mark lg"><object type="image/svg+xml" data="/static/codenest-mark.svg?v=20260724k" aria-label="CodeNest"></object></div><h2>Reset password</h2><p>We'll email you a 6-digit code.</p></div>
     <form id="formForgot1" class="auth-form">
       <label class="field"><span>Email</span><input type="email" id="fp_email" placeholder="you@example.com" required></label>
       <button type="submit" class="btn-primary block" id="btnForgot1"><span>Send reset code</span></button>
@@ -224,7 +350,7 @@
 <div class="auth" id="screen-forgot2">
   <div class="auth-card">
     <button class="back" onclick="showScreen('screen-forgot1')">← Back</button>
-    <div class="auth-head"><div class="brand-mark lg">AC</div><h2>Enter reset code</h2><p>Check your email for the 6-digit code.</p></div>
+    <div class="auth-head"><div class="brand-mark lg"><object type="image/svg+xml" data="/static/codenest-mark.svg?v=20260724k" aria-label="CodeNest"></object></div><h2>Enter reset code</h2><p>Check your email for the 6-digit code.</p></div>
     <div class="otp-expire" id="otpExpireReset"></div>
     <div class="otp-boxes" id="otpBoxesForgot">
       <input maxlength="1" inputmode="numeric"><input maxlength="1" inputmode="numeric"><input maxlength="1" inputmode="numeric">
@@ -238,7 +364,7 @@
 <div class="auth" id="screen-forgot3">
   <div class="auth-card">
     <button class="back" onclick="showScreen('screen-forgot2')">← Back</button>
-    <div class="auth-head"><div class="brand-mark lg">AC</div><h2>New password</h2></div>
+    <div class="auth-head"><div class="brand-mark lg"><object type="image/svg+xml" data="/static/codenest-mark.svg?v=20260724k" aria-label="CodeNest"></object></div><h2>New password</h2></div>
     <form id="formForgot3" class="auth-form">
       <label class="field"><span>New password</span><input type="password" id="fp_newpass" placeholder="••••••••" autocomplete="new-password" required>
         <div class="strength-bar"><div class="strength-fill" id="strengthFill3"></div></div>
@@ -264,7 +390,7 @@
   <div class="side-overlay hidden" id="sideOverlay"></div>
   <header class="dash-bar">
     <button class="side-menu-btn" id="sideMenuBtn" aria-label="Open menu"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>
-    <div class="brand" onclick="switchTab('overview')"><div class="brand-mark">AC</div><span class="brand-text">Ahad Co</span></div>
+    <div class="brand" onclick="switchTab('overview')"><div class="brand-mark"><object type="image/svg+xml" data="/static/codenest-mark.svg?v=20260724k" aria-label="CodeNest"></object></div><span class="brand-text">CodeNest</span></div>
     <nav class="dash-tabs">
       <div class="tab-group">Create</div>
       <button title="Overview" class="dash-tab active" data-tab="overview"><svg class="tab-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7.5" height="7.5" rx="1.5"/><rect x="13.5" y="3" width="7.5" height="7.5" rx="1.5"/><rect x="3" y="13.5" width="7.5" height="7.5" rx="1.5"/><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="1.5"/></svg><span class="tab-tx">Overview</span></button>
@@ -323,55 +449,64 @@
         </div>
 
     <div class="dash-tab-content code-studio" id="tab-code">
-      <!-- Studio header bar -->
+      <!-- Toolbar: single 36px row, never wraps -->
       <div class="cs-header">
         <div class="cs-brand">
-          <div class="cs-icon">&lt;/&gt;</div>
-          <input type="text" id="snippetTitle" class="cs-name" placeholder="Untitled project">
-          <div class="cs-pill" id="editorMeta">0 lines</div>
+          <input type="text" id="snippetTitle" class="cs-name" placeholder="Untitled" spellcheck="false">
         </div>
-        <select id="snippetLanguage" class="cs-lang">
+        <select id="snippetLanguage" class="cs-lang" title="Language">
           <option value="html">HTML</option>
           <option value="css">CSS</option>
-          <option value="javascript">JavaScript</option>
-          <option value="markdown">Markdown</option>
-          <option value="python">Python</option>
-          <option value="text">Plaintext</option>
-          <option value="typescript">TypeScript</option>
+          <option value="javascript">JS</option>
+          <option value="markdown">MD</option>
+          <option value="python">PY</option>
+          <option value="text">TXT</option>
+          <option value="typescript">TS</option>
           <option value="json">JSON</option>
-          <option value="bash">Bash</option>
+          <option value="bash">SH</option>
           <option value="sql">SQL</option>
-          <option value="java">Java</option>
-          <option value="cpp">C / C++</option>
-          <option value="go">Go</option>
+          <option value="java">JAVA</option>
+          <option value="cpp">C/C++</option>
+          <option value="go">GO</option>
           <option value="php">PHP</option>
-          <option value="ruby">Ruby</option>
+          <option value="ruby">RB</option>
         </select>
         <div class="cs-actions">
-          <button class="cs-act" id="btnEditorFull" title="Fullscreen editor (Esc to exit)"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M8.5 3.5h-3a2 2 0 0 0-2 2v3M15.5 3.5h3a2 2 0 0 1 2 2v3M8.5 20.5h-3a2 2 0 0 1-2-2v-3M15.5 20.5h3a2 2 0 0 0 2-2v-3"/></svg></button>
-          <button class="cs-act" id="btnNewSnippet" title="New">＋</button>
-          <button class="cs-act" id="btnFormatSnippet" title="Format">Format</button>
-          <button class="cs-act run" id="btnRunCode" title="Run code in the terminal (Ctrl+Enter)"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M8 5.2v13.6c0 .9 1 1.5 1.8 1L20 13a1.2 1.2 0 0 0 0-2L9.8 4.3A1.2 1.2 0 0 0 8 5.2z"/></svg> Run</button>
-          <button class="cs-act" id="btnRunSnippet" title="Toggle preview">Preview</button>
-          <button class="cs-act" id="btnShareSnippet" title="Publish standalone page">Publish</button>
-          <button class="cs-act primary" id="btnSaveSnippet" title="Save">Save</button>
+          <button class="cs-act ic-btn" id="btnNewSnippet" title="New file (Ctrl+N)"><svg viewBox="0 0 24" class="btn-svg"><use href="#i-plus"/></svg></button>
+          <button class="cs-act ic-btn" id="btnCopySnippet" title="Copy code"><svg viewBox="0 0 24" class="btn-svg"><use href="#i-copy"/></svg></button>
+          <button class="cs-act ic-btn" id="btnDownloadSnippet" title="Download file"><svg viewBox="0 0 24" class="btn-svg"><use href="#i-download"/></svg></button>
+          <button class="cs-act ic-btn" id="btnFormatSnippet" title="Format"><svg viewBox="0 0 24" class="btn-svg"><use href="#i-format"/></svg></button>
+          <button class="cs-act" id="btnRunSnippet" title="Preview"><svg viewBox="0 0 24" class="btn-svg"><use href="#i-eye"/></svg><span>Preview</span></button>
+          <button class="cs-act" id="btnToggleTerm" title="Terminal (Ctrl+`)"><svg viewBox="0 0 24" class="btn-svg"><use href="#i-terminal"/></svg><span>Term</span></button>
+          <button class="cs-act primary publish-btn" id="btnShareSnippet" title="Publish" data-rocket><svg viewBox="0 0 24" class="btn-svg"><use href="#i-rocket"/></svg><span>Publish</span></button>
+          <button class="cs-act" id="btnSaveSnippet" title="Save (Ctrl+S)"><svg viewBox="0 0 24" class="btn-svg"><use href="#i-save"/></svg><span>Save</span></button>
         </div>
       </div>
-      <!-- Canvas: editor takes most of the screen -->
+
+      <!-- Main row: activity bar + explorer + editor + preview -->
       <div class="cs-canvas" id="ideSplit">
+        <div class="cs-activity">
+          <button class="cs-act-btn" id="btnExplorer" title="Explorer (Ctrl+B)"><svg viewBox="0 0 24" class="btn-svg"><use href="#i-folder"/></svg></button>
+          <!-- Search button hidden (no functionality yet) -->
+        </div>
+        <div class="cs-explorer">
+          <div class="cs-explorer-head">
+            <span>EXPLORER</span>
+            <button id="btnNewFileExplorer" title="New file" onclick="if(typeof window.newSnippet==='function')window.newSnippet();else document.getElementById('btnNewSnippet').click()">+</button>
+          </div>
+          <div class="snippets-list" id="snippetsList"></div>
+        </div>
         <div class="cs-editor-zone" id="ideEditor">
-          <div class="cs-gutter" id="csGutter"></div>
           <textarea id="snippetContent" class="cs-code-input" placeholder="// Start coding here...
 // Type HTML, CSS, JS or Markdown — hit Preview to see it live
-// Pick Python/Go/C/Java... and hit ▶ Run — output appears in the terminal below
-// Hit Publish to deploy a standalone static page (like GitHub Pages)
-// Ctrl+Enter = run / preview · Ctrl+S = save · Tab = 2 spaces" spellcheck="false"></textarea>
+// Pick Python/Go/C/Java... and hit Run ▶ — output appears below
+// Hit Publish to deploy a standalone static page
+// Ctrl+Enter = run · Ctrl+S = save · Tab = 2 spaces" spellcheck="false"></textarea>
         </div>
-        <!-- Floating preview panel (slides in on demand) -->
         <div class="cs-preview-zone" id="idePreview">
           <div class="cs-preview-top">
-            <span id="previewMeta">live preview</span>
-            <button class="cs-close-prev" id="ideDivider" title="Close preview">✕</button>
+            <span id="previewMeta">Preview</span>
+            <button class="cs-close-prev ic-btn" id="ideDivider" title="Close preview"><svg viewBox="0 0 24" class="btn-svg"><use href="#i-x"/></svg></button>
           </div>
           <div class="cs-preview-body" id="previewWrap">
             <iframe id="livePreview" class="cs-iframe" sandbox="allow-scripts allow-modals"></iframe>
@@ -379,74 +514,347 @@
           </div>
         </div>
       </div>
-      <!-- Integrated terminal (bottom panel — shows REAL runner output) -->
+      <!-- Bottom run terminal (toggles open/closed) -->
       <div class="ah-term" id="ahTerm">
         <div class="ah-term-head">
           <span class="ah-dots"><i class="d-r"></i><i class="d-y"></i><i class="d-g"></i></span>
-          <span class="ah-term-title" id="ahTermTitle">user@ahad-co: ~</span>
+          <span class="ah-term-title" id="ahTermTitle">output</span>
           <span class="ah-term-badge" id="ahTermBadge"></span>
-          <button class="ah-term-close" id="ahTermClose" title="Close terminal">✕</button>
+          <button class="ah-term-close" id="ahTermClose" title="Close (Ctrl+`)">&#10005;</button>
         </div>
         <div class="ah-term-body" id="ahTermBody"></div>
       </div>
-      <!-- Saved projects strip -->
-      <div class="cs-projects">
-        <div class="cs-proj-head">
-          <h3>Saved projects</h3>
-          <span class="cs-proj-count" id="snippetCount">0</span>
-        </div>
-        <div class="snippets-list" id="snippetsList"></div>
+      <!-- Status bar -->
+      <div class="cs-status">
+        <span id="csStatusGit">&#x2387; main</span>
+        <span id="csStatusErr"></span>
+        <span class="cs-st-right">
+          <span id="csStatusLn">Ln 1, Col 1</span>
+          <span id="csStatusLang">Plaintext</span>
+          <span>Spaces: 2</span>
+          <span>UTF-8</span>
+          <span>LF</span>
+        </span>
       </div>
     </div>
 
-    <!-- RUNSPACE — free 24/7 hosting (Telegram bots, scrapers, APIs) -->
+    <!-- RUNSPACE — Replit/Codespaces-style IDE (3-panel) -->
     <div class="dash-tab-content" id="tab-jobs">
-      <div class="tab-head">
-        <div><div class="eyebrow">FREE HOSTING · 24/7</div><h2>RunSpace</h2></div>
-      </div>
-      <p class="jobs-sub">Your Telegram bot, scraper, API or any loop — deployed in seconds and kept running day &amp; night, <b>free</b> (up to 3 apps). It restarts itself if it crashes. Open a web server on the <code>PORT</code> env variable (bind <code>0.0.0.0</code>) and a public <code>/live/…</code> URL appears under the app — copy &amp; share it.</p>
-      <p class="jobs-note">Libraries in your imports install by themselves · live URLs stay up while the app runs.</p>
 
-      <div class="job-form">
-        <div class="job-form-head">
-          DEPLOY PANEL
-          <span class="job-form-hint">Paste code · Ctrl+Enter deploys · web servers get a public URL</span>
-        </div>
-        <div class="job-form-row">
-          <input type="text" id="jobName" class="input-text" placeholder="App name — e.g. my-tg-bot" maxlength="60">
-          <select id="jobLang" class="input-text job-lang">
-            <option value="python">python</option>
-            <option value="javascript">javascript</option>
-            <option value="bash">bash</option>
-            <option value="ruby">ruby</option>
-            <option value="php">php</option>
-          </select>
-        </div>
-        <textarea id="jobCode" class="input-textarea tall mono" spellcheck="false" placeholder="# Paste ANY code — a Telegram bot, a scraper, an API.
-# Imports (telegram, requests, bs4…) install BY THEMSELVES.
-# Press Deploy 24/7 — it stays online and restarts if it crashes.
-# Open a web server on 0.0.0.0:$PORT for a free public /live/… URL."></textarea>
-        <div class="form-actions">
-          <button class="btn-primary sm" id="btnStartJob">Deploy 24/7</button>
+      <div class="rs-menu-backdrop" id="wbBackdrop"></div>
+
+      <!-- TOP THIN TOOLBAR -->
+      <div class="rs-bar">
+        <button type="button" class="rs-icon-btn" id="wbMenuBtn" aria-label="Toggle file panel">
+          <svg viewBox="0 0 24" class="rs-ic" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+        </button>
+        <div class="rs-title" id="rsTitle">RunSpace</div>
+        <div class="rs-actions">
+          <button class="rs-text-btn" id="btnNew2">+ New</button>
+          <span class="rs-status-dot" id="wbRunnerStat" title="runner status"></span>
         </div>
       </div>
 
-      <div class="jobs-list" id="jobsList"></div>
+      <div class="rs-body">
+        <!-- LEFT SIDEBAR: file list -->
+        <aside class="rs-side" id="wbSide">
+          <div class="rs-side-head">
+            <span class="rs-side-title">FILES</span>
+            <span class="rs-count" id="txJobCount">0</span>
+          </div>
+          <button type="button" class="rs-new-btn" id="btnNew" title="New job (Ctrl+N)">
+            <svg viewBox="0 0 24" class="rs-ic-sm" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+            New job
+          </button>
+          <div class="rs-list" id="jobsList"></div>
+        </aside>
 
-      <div class="jobs-log" id="jobLogBox" style="display:none">
-        <div class="jobs-log-head">
-          <span id="jobLogTitle">logs</span>
-          <span class="jobs-log-actions">
-            <button class="jobs-log-btn" id="jobLogCopy" title="Copy full logs">⧉ Copy</button>
-            <button class="jobs-log-btn" id="jobLogFull" title="Full view">⤢ Full</button>
-            <button class="jobs-log-btn" id="jobLogRefresh" title="Refresh">⟳</button>
-            <button class="jobs-log-btn" id="jobLogClose" title="Close">✕</button>
-          </span>
-        </div>
-        <pre class="jobs-log-body" id="jobLogBody"></pre>
+        <!-- MAIN EDITOR + LOGS -->
+        <main class="rs-main">
+
+          <!-- Empty state (no job selected) -->
+          <div class="rs-empty" id="wbEmpty">
+            <div class="rs-empty-ic">
+              <svg viewBox="0 0 24" width="36" height="36" fill="none" stroke="#30363d" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/><path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"/><path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"/><path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/></svg>
+            </div>
+            <div class="rs-empty-title">No job selected</div>
+            <div class="rs-empty-sub">Create a new job or pick one from the left to start editing.</div>
+            <button class="rs-empty-btn" id="btnNewEmpty">
+              <svg viewBox="0 0 24" class="rs-ic-sm" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+              Create new job
+            </button>
+          </div>
+
+          <!-- Active workspace -->
+          <div class="rs-ws" id="wbWorkspace" style="display:none">
+            <!-- Editor sub-toolbar: name/lang/import + run/save/stop -->
+            <div class="rs-ed-bar">
+              <div class="rs-ed-group">
+                <input class="rs-inp" id="jobName" type="text" placeholder="job name" maxlength="60" spellcheck="false" autocomplete="off">
+                <select class="rs-sel" id="jobLang" title="Runtime">
+                  <option value="python">Python</option>
+                  <option value="javascript">Node.js</option>
+                  <option value="bash">Bash</option>
+                  <option value="ruby">Ruby</option>
+                  <option value="php">PHP</option>
+                </select>
+                <input class="rs-inp rs-gh" id="jobRepoUrl" type="url" placeholder="GitHub repo URL (optional)" spellcheck="false" autocomplete="off">
+                <button class="rs-icon-btn rs-tb" id="btnImportGh" title="Import from GitHub">
+                  <svg viewBox="0 0 24 24" class="rs-ic-sm" fill="currentColor" aria-hidden="true"><path d="M12 .5C5.73.5.5 5.73.5 12a11.5 11.5 0 0 0 7.86 10.92c.58.11.79-.25.79-.56 0-.28-.01-1.02-.02-2-3.2.7-3.88-1.54-3.88-1.54-.52-1.33-1.28-1.68-1.28-1.68-1.05-.72.08-.71.08-.71 1.16.08 1.77 1.19 1.77 1.19 1.03 1.77 2.71 1.26 3.37.96.1-.75.4-1.26.73-1.55-2.55-.29-5.24-1.28-5.24-5.7 0-1.26.45-2.29 1.18-3.1-.12-.29-.51-1.46.11-3.05 0 0 .97-.31 3.18 1.18a11 11 0 0 1 5.78 0c2.21-1.49 3.18-1.18 3.18-1.18.63 1.59.24 2.76.12 3.05.74.81 1.18 1.84 1.18 3.1 0 4.42-2.69 5.41-5.25 5.69.41.35.78 1.05.78 2.12 0 1.53-.01 2.76-.01 3.14 0 .31.21.68.8.56A11.5 11.5 0 0 0 23.5 12C23.5 5.73 18.27.5 12 .5z"/></svg>
+                </button>
+              </div>
+              <div class="rs-ed-actions">
+                <button class="rs-run-btn" id="btnStartJob" title="Run & deploy (Ctrl+Enter)">
+                  <span class="rs-run-ic">
+                    <svg viewBox="0 0 24 24" class="rs-ic-sm" fill="currentColor" stroke="none" aria-hidden="true"><polygon points="7,5 19,12 7,19"/></svg>
+                  </span>
+                  <span class="rs-spin" aria-hidden="true"></span>
+                  <span class="rs-btn-label">Run</span>
+                </button>
+                <button class="rs-icon-btn rs-tb" id="btnJobDetails" title="View job details" style="display:none">
+                  <svg viewBox="0 0 24 24" class="rs-ic-sm" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v4l3 2"/></svg>
+                </button>
+                <button class="rs-icon-btn rs-tb" id="btnStopJob" title="Stop job" style="display:none">
+                  <svg viewBox="0 0 24 24" class="rs-ic-sm" fill="currentColor" stroke="none" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1.5"/></svg>
+                </button>
+                <button class="rs-icon-btn rs-tb" id="btnRestartJob" title="Restart job" style="display:none">
+                  <svg viewBox="0 0 24 24" class="rs-ic-sm" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/></svg>
+                </button>
+                <button class="rs-icon-btn rs-tb" id="btnDeselect" title="Close job">
+                  <svg viewBox="0 0 24 24" class="rs-ic-sm" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+                </button>
+              </div>
+            </div>
+
+            <!-- Vertical split: editor top, logs bottom -->
+            <div class="rs-split" id="wbSplit">
+              <!-- Editor pane -->
+              <div class="rs-pane rs-editor">
+                <div class="rs-cm-host" id="jobCmHost">
+                  <textarea class="rs-code" id="jobCode" spellcheck="false" autocapitalize="off" placeholder="// Paste your code here, then click Run to deploy 24/7"></textarea>
+                </div>
+              </div>
+              <!-- Draggable divider -->
+              <div class="rs-divider" id="wbDivider" title="Drag to resize"></div>
+              <!-- Log pane -->
+              <div class="rs-pane rs-logs">
+                <div class="rs-log-head">
+                  <span class="rs-log-dot" id="jobLogTitle"></span>
+                  <span class="rs-log-label">Output</span>
+                  <div class="rs-log-acts">
+                    <button class="rs-icon-btn rs-tb" id="jobLogCopy" title="Copy logs">
+                      <svg viewBox="0 0 24 24" class="rs-ic-sm" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/></svg>
+                    </button>
+                    <button class="rs-icon-btn rs-tb" id="jobLogDl" title="Download logs">
+                      <svg viewBox="0 0 24 24" class="rs-ic-sm" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
+                    </button>
+                    <button class="rs-icon-btn rs-tb" id="jobLogRefresh" title="Reload logs">
+                      <svg viewBox="0 0 24 24" class="rs-ic-sm spin-target" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/></svg>
+                    </button>
+                    <button class="rs-icon-btn rs-tb" id="jobLogBottom" title="Jump to bottom">
+                      <svg viewBox="0 0 24 24" class="rs-ic-sm" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/><path d="m6 15 6 6 6-6"/></svg>
+                    </button>
+                    <button class="rs-icon-btn rs-tb" id="jobLogClear" title="Clear">
+                      <svg viewBox="0 0 24 24" class="rs-ic-sm" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+                    </button>
+                  </div>
+                </div>
+                <pre class="rs-log-body" id="jobLogBody"><span class="rs-log-empty">// Logs will appear here when you run the job.</span></pre>
+              </div>
+            </div>
+
+            <!-- JOB DETAILS DRAWER -->
+            <aside class="rs-detail" id="jobDetailPanel" aria-hidden="true">
+              <div class="rs-detail-head">
+                <button class="rs-icon-btn rs-tb" id="jobDetailBack" title="Back to editor">
+                  <svg viewBox="0 0 24 24" class="rs-ic-sm" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>
+                </button>
+                <div class="rs-detail-title">
+                  <div class="rs-detail-name" id="jdName">—</div>
+                  <div class="rs-detail-sub">
+                    <span class="jlang-icon" id="jdLang">py</span>
+                    <span class="rs-dot-sep">·</span>
+                    <span class="rs-badge" id="jdBadge">stopped</span>
+                    <span class="rs-dot-sep">·</span>
+                    <span id="jdUptime">up 0s</span>
+                    <span class="rs-dot-sep">·</span>
+                    <span id="jdRestarts">0 restarts</span>
+                  </div>
+                </div>
+                <div class="rs-detail-head-acts">
+                  <button class="rs-icon-btn rs-tb" id="jdRestart" title="Restart">
+                    <svg viewBox="0 0 24 24" class="rs-ic-sm" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/></svg>
+                  </button>
+                  <button class="rs-icon-btn rs-tb" id="jdStop" title="Stop">
+                    <svg viewBox="0 0 24 24" class="rs-ic-sm" fill="currentColor" stroke="none" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1.5"/></svg>
+                  </button>
+                  <button class="rs-icon-btn rs-tb" id="jdDelete" title="Delete">
+                    <svg viewBox="0 0 24 24" class="rs-ic-sm" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"/></svg>
+                  </button>
+                </div>
+              </div>
+              <div class="rs-detail-body">
+                <!-- Logs card -->
+                <section class="rs-card">
+                  <header class="rs-card-head">
+                    <span class="rs-card-title">Logs</span>
+                    <div class="rs-card-acts">
+                      <button class="rs-icon-btn rs-tb" id="jdCopy" title="Copy logs"><svg viewBox="0 0 24 24" class="rs-ic-sm" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/></svg></button>
+                      <button class="rs-icon-btn rs-tb" id="jdClear" title="Clear"><svg viewBox="0 0 24 24" class="rs-ic-sm" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
+                    </div>
+                  </header>
+                  <pre class="rs-log-body rs-detail-logs" id="jdLogBody"><span class="rs-log-empty">// Select a running job to see its logs.</span></pre>
+                </section>
+                <!-- Public URL card -->
+                <section class="rs-card" id="jdUrlCard" style="display:none">
+                  <header class="rs-card-head">
+                    <span class="rs-card-title">Public URL</span>
+                    <span class="rs-health" id="jdHealth"><span class="rs-h-dot"></span><span class="rs-h-tx">checking…</span></span>
+                  </header>
+                  <div class="rs-url-row">
+                    <a class="rs-url" id="jdUrl" href="#" target="_blank" rel="noopener">—</a>
+                    <button class="rs-icon-btn rs-tb" id="jdUrlCopy" title="Copy link"><svg viewBox="0 0 24 24" class="rs-ic-sm" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/></svg></button>
+                    <a class="rs-text-btn" id="jdUrlOpen" href="#" target="_blank" rel="noopener">Open ↗</a>
+                  </div>
+                  <div class="rs-sub" id="jdHealthSub">Last checked: just now</div>
+                </section>
+                <!-- Resources card -->
+                <section class="rs-card">
+                  <header class="rs-card-head"><span class="rs-card-title">Resources</span></header>
+                  <div class="rs-meta-grid">
+                    <div><span class="rs-k">CPU</span><span class="rs-v" id="jdCpu">—</span></div>
+                    <div><span class="rs-k">Memory</span><span class="rs-v" id="jdMem">—</span></div>
+                    <div><span class="rs-k">PID</span><span class="rs-v" id="jdPid">—</span></div>
+                    <div><span class="rs-k">Port</span><span class="rs-v" id="jdPort">—</span></div>
+                  </div>
+                </section>
+                <!-- Environment vars -->
+                <section class="rs-card">
+                  <header class="rs-card-head">
+                    <span class="rs-card-title">Environment variables</span>
+                    <button class="rs-text-btn" id="jdEnvAdd">+ Add</button>
+                  </header>
+                  <div class="rs-env-list" id="jdEnvList">
+                    <div class="rs-empty-sm">No variables set. Secrets are stored per-job and injected at start.</div>
+                  </div>
+                  <div class="rs-sub" id="jdEnvHint">Env changes take effect on next Restart.</div>
+                </section>
+                <!-- Export -->
+                <section class="rs-card">
+                  <header class="rs-card-head"><span class="rs-card-title">Download files</span></header>
+                  <div class="rs-dl-wrap" id="jdDlWrap">
+                    <button class="rs-text-btn rs-dl-main" id="jdDl">
+                      <svg viewBox="0 0 24" class="rs-ic-sm" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                        <polyline points="7 10 12 15 17 10"/>
+                        <line x1="12" y1="15" x2="12" y2="3"/>
+                      </svg>
+                      <span class="rs-dl-label">Download</span>
+                    </button>
+                    <button class="rs-text-btn rs-dl-caret" id="jdDlCaret" title="Choose file">
+                      <svg viewBox="0 0 24" class="rs-ic-sm" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <polyline points="6 9 12 15 18 9"/>
+                      </svg>
+                    </button>
+                    <div class="rs-dl-menu" id="jdDlMenu" role="menu" aria-hidden="true">
+                      <button class="rs-dl-item" data-type="source" role="menuitem">
+                        <span class="rs-dl-ic">
+                          <svg viewBox="0 0 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>
+                          </svg>
+                        </span>
+                        <span class="rs-dl-tx">
+                          <b>Source code</b>
+                          <small>.py / .js / .sh etc.</small>
+                        </span>
+                      </button>
+                      <button class="rs-dl-item" data-type="logs" role="menuitem">
+                        <span class="rs-dl-ic">
+                          <svg viewBox="0 0 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><path d="M8 13h.01"/><path d="M11 13h5"/><path d="M8 17h.01"/><path d="M11 17h5"/>
+                          </svg>
+                        </span>
+                        <span class="rs-dl-tx">
+                          <b>Logs</b>
+                          <small>.log text file</small>
+                        </span>
+                      </button>
+                      <button class="rs-dl-item" data-type="db" role="menuitem">
+                        <span class="rs-dl-ic">
+                          <svg viewBox="0 0 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/>
+                          </svg>
+                        </span>
+                        <span class="rs-dl-tx">
+                          <b>Database</b>
+                          <small>.db / .sqlite / .json</small>
+                        </span>
+                      </button>
+                    </div>
+                  </div>
+                </section>
+                <!-- Timeline / history -->
+                <section class="rs-card">
+                  <header class="rs-card-head"><span class="rs-card-title">Timeline</span></header>
+                  <ol class="rs-timeline" id="jdTimeline"><li class="rs-empty-sm">Events will appear here.</li></ol>
+                </section>
+                <div class="rs-detail-foot">
+                  <button class="rs-text-btn" id="jdEditCode"><svg viewBox="0 0 24" class="rs-ic-sm" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>Edit code</button>
+                </div>
+              </div>
+            </aside>
+          </div>
+        </main>
       </div>
     </div>
 
+    <!-- TERMUX STANDALONE TAB — only reachable via /terminal URL -->
+    <div class="dash-tab-content term-page" id="tab-term">
+      <div class="term-standalone wb-term" id="termStandalone">
+        <button class="wb-term-exit-fab" id="termExit" title="Back to dashboard">
+          <svg viewBox="0 0 24" class="btn-svg"><use href="#i-x"/></svg>
+        </button>
+        <div class="wb-term-slots" id="standSlots"></div>
+        <div class="wb-term-body" id="standBody">
+          <div class="term-landing" id="standLanding">
+            <div>
+              <div class="art">    _    _               _
+   / \  | |__   __ _  __| |
+  / _ \ | '_ \ / _` |/ _` |
+ / ___ \| | | | (_| | (_| |
+/_/   \_\_| |_|\__,_|\__,_|</div>
+              <div class="hint">CodeNest &middot; Termux-compatible shell</div>
+              <div class="hint" style="margin-top:6px;">bash &middot; python3 &middot; node &middot; git &middot; pip &middot; pkg</div>
+              <div class="hint" style="margin-top:10px;color:#76614a;font-size:11px;max-width:320px;line-height:1.45;">⚠ Files snapshotted to your account (redeploys-এ হারায় না)। <tt style="color:#c9ab7d;">~/.ahad_autostart</tt> এ commands রাখলে 24/7 চালু থাকবে (TG/Discord bot — crash হলে auto-restart, nohup লাগে না)। Log: <tt>~/.ahad_autostart.log</tt></div>
+              <button class="term-connect-btn" id="standConnect">START SESSION</button>
+            </div>
+          </div>
+        </div>
+        <div class="wb-term-kbd" id="standKbd">
+          <div class="wb-kbd-row">
+            <button data-k="esc">ESC</button>
+            <button data-k="drawer">≡</button>
+            <button data-k="kbd">↕</button>
+            <button data-k="home">HOME</button>
+            <button data-k="up">↑</button>
+            <button data-k="end">END</button>
+            <button data-k="pgup">PGUP</button>
+            <button data-k="paste" class="kbd-paste">PASTE</button>
+            <button data-k="copy" class="kbd-copy">COPY</button>
+          </div>
+          <div class="wb-kbd-row">
+            <button data-k="tab">TAB</button>
+            <button data-k="ctrl">CTRL</button>
+            <button data-k="alt">ALT</button>
+            <button data-k="left">←</button>
+            <button data-k="down">↓</button>
+            <button data-k="right">→</button>
+            <button data-k="pgdn">PGDN</button>
+                <button data-k="save" class="kbd-nano">SAVE</button>
+                <button data-k="exit" class="kbd-nano">EXIT</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- PROFILE / SETTINGS -->
     <div class="dash-tab-content" id="tab-profile">
       <div class="tab-head"><div><div class="eyebrow">SETTINGS</div><h2>Profile &amp; security</h2></div></div>
       <div class="profile-grid">
@@ -551,7 +959,6 @@
   <nav class="bottom-nav" id="bottomNav">
     <button class="bn-item active" data-tab="overview"><span class="bn-ic"><svg class="tab-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 11 12 4l8 7"/><path d="M6 9.5V20h12V9.5"/></svg></span><span class="bn-l">Home</span></button>
     <button class="bn-item" data-tab="code"><span class="bn-ic"><svg class="tab-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 8l-4.5 4L9 16M15 8l4.5 4L15 16"/></svg></span><span class="bn-l">Code</span></button>
-    <button class="bn-item" id="bnSearch"><span class="bn-ic"><svg class="tab-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg></span><span class="bn-l">Search</span></button>
     <button class="bn-item" data-tab="jobs"><span class="bn-ic"><svg class="tab-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/><path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"/><path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"/><path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/></svg></span><span class="bn-l">RunSpace</span></button>
     <button class="bn-item" data-tab="more" id="bnMore"><span class="bn-ic"><svg class="tab-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg></span><span class="bn-l">Menu</span></button>
   </nav>
@@ -638,9 +1045,19 @@
   </div>
 </div>
 
+<!-- Long-press context menu for terminal (Copy / Paste / Select All) -->
+<div class="term-ctx" id="termCtxMenu" style="display:none">
+  <button type="button" data-act="paste">Paste</button>
+  <button type="button" data-act="copy">Copy</button>
+  <button type="button" data-act="selectAll">Select all</button>
+  <button type="button" data-act="ctrlc">Ctrl+C (stop)</button>
+  <button type="button" data-act="close" class="ctx-close">Cancel</button>
+</div>
+
 <div class="toast-container" id="toastContainer"></div>
 
-<script src="/static/pro.js?v=20260719g"></script>
+<script src="/static/pro.js?v=20260724k"></script>
+<script src="/static/terminal.js?v=20260724k"></script>
 <script>
   // Safety net: never leave the user stuck on the splash — remove the
   // booting class AND hard-hide the splash element, whatever went wrong.

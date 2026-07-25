@@ -56,7 +56,7 @@ except ImportError:  # pragma: no cover
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 logger = logging.getLogger("runner")
 
-app = FastAPI(title="Ahad Code Runner")
+app = FastAPI(title="CodeNest Runner")
 
 SECRET = os.getenv("RUNNER_SERVICE_SECRET", "").strip()
 MAX_TIME_MS = int(os.getenv("MAX_EXECUTION_TIME_MS", "10000"))
@@ -150,7 +150,7 @@ def root():
     by default) and curious browsers see the service is alive instead of a 404.
     The actual health/details endpoints remain below."""
     return {
-        "service": "ahad-code-runner",
+        "service": "codenest-runner",
         "status": "ok",
         "endpoints": ["/health", "/api/v2/runtimes"],
         "note": "This is an internal code-execution API. POST /internal/execute with a Bearer secret to run code.",
@@ -311,6 +311,40 @@ _jobs: dict = {}                                    # id -> job record
 _jobs_lock = threading.Lock()
 
 # ---------------------------------------------------------------------------
+# PERSISTENT JOB WORKSPACE
+# ---------------------------------------------------------------------------
+# Long-lived bots (Telegram referral bots, scrapers writing SQLite DBs,
+# session caches, etc.) keep their files across admin code-edits and across
+# Render re-deploys / container restarts. Each job gets a STABLE directory
+# under JOBS_DATA_DIR keyed by its own id, so Stop/Restart reuses it.
+# One-shot /internal/execute runs still live in tempfile.mkdtemp and are
+# wiped after each request — they are ephemeral by design.
+#
+# For TRUE cross-deploy persistence on Render, mount a Render Persistent
+# Disk at /app/data on a paid Starter plan; on the free tier the directory
+# survives process restarts / self-ping wakes but NOT full rebuilds.
+_default_data_dir = os.environ.get("DATA_DIR", "/app/data")
+if not os.access(os.path.dirname(_default_data_dir) or "/", os.W_OK):
+    # Fallback for local dev / non-Docker runs where /app isn't writable.
+    _default_data_dir = os.path.join(tempfile.gettempdir(), "ahad-runner-data")
+JOBS_DATA_DIR = os.environ.get(
+    "JOBS_DATA_DIR",
+    os.path.join(_default_data_dir, "jobs"),
+)
+os.makedirs(JOBS_DATA_DIR, exist_ok=True)
+logger.info("Jobs data dir: %s (persistent workspace for bots)", JOBS_DATA_DIR)
+
+
+def _job_dir(job_id: str) -> str:
+    """Stable directory for a given job_id — same path across restarts.
+    Bots can freely write ./database.db, ./session.json, ./data/* here and
+    they survive Stop/Restart and (with a disk mounted) full redeploys."""
+    d = os.path.join(JOBS_DATA_DIR, job_id)
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+# ---------------------------------------------------------------------------
 # PUBLIC WEB ADDRESSES — /live/{job-slug}/
 # A job that opens a listening socket gets a public URL on THIS runner:
 #   https://<runner-host>/live/{slug}/  →  http://127.0.0.1:{job port}/...
@@ -323,17 +357,16 @@ LIVE_PORT_MIN = int(os.getenv("LIVE_PORT_MIN", "11000"))
 LIVE_PORT_MAX = int(os.getenv("LIVE_PORT_MAX", "11099"))
 LIVE_RATE_LIMIT = int(os.getenv("LIVE_RATE_LIMIT", "60"))      # req per minute per visitor IP per job
 LIVE_RATE_WINDOW_S = 60
-PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/")  # e.g. https://ahad-code-runner.onrender.com
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/")  # e.g. https://codenest-runner.onrender.com
 
 _live_hits: dict = {}        # (slug, ip) -> deque[timestamps]  (in-memory rate limiter)
 _live_hits_lock = threading.Lock()
 
 
 def _purge_orphan_jobs() -> None:
-    """Jobs run with start_new_session=True, so an old job can OUTLIVE the
-    runner itself (platform restart) — an orphaned process squatting on a
-    pool port and a stale temp dir, while the new runner's port-allocator
-    starts clean. Reclaim the box: kill leftovers, wipe their dirs."""
+    """Reclaim orphaned job PROCESSES from an old runner incarnation but
+    NEVER delete the persistent workspace directories — bot databases /
+    session files live there and must survive redeploys."""
     if os.name != "posix":
         return
     tmp = tempfile.gettempdir()
@@ -344,12 +377,18 @@ def _purge_orphan_jobs() -> None:
                 continue
             try:
                 cwd = os.readlink(f"/proc/{pid}/cwd")
-                if cwd.startswith(tmp + "/job_"):
+                if cwd.startswith(tmp + "/job_") \
+                        or cwd.startswith(tmp + "/run_") \
+                        or cwd.startswith(JOBS_DATA_DIR + "/"):
                     os.kill(int(pid), signal.SIGKILL)
                     logger.info("Purged orphaned job process %s (cwd %s)", pid, cwd)
             except Exception:
                 pass
+        # Wipe stale one-shot temp dirs only; the persistent JOBS_DATA_DIR
+        # is intentionally LEFT ALONE so bot databases survive redeploys.
         for d in Path(tmp).glob("job_*"):
+            shutil.rmtree(d, ignore_errors=True)
+        for d in Path(tmp).glob("run_*"):
             shutil.rmtree(d, ignore_errors=True)
     except Exception:
         pass
@@ -381,7 +420,7 @@ def _slugify(name: str) -> str:
 def _live_page(title: str, body: str, accent: str = "#0f0e0c") -> HTMLResponse:
     """Tiny self-contained status page for public /live/ visitors."""
     # Abuse-report link points back at the main site (set SITE_BASE_URL on this
-    # service, e.g. https://ahad-co-auth.onrender.com). Omitted when unset.
+    # service, e.g. https://codenest-app.onrender.com). Omitted when unset.
     site = os.getenv("SITE_BASE_URL", "").strip().rstrip("/")
     report = (
         f'<p class="note"><a style="color:inherit" href="{site}/report-abuse">Report abuse</a></p>'
@@ -471,6 +510,8 @@ class JobStartRequest(BaseModel):
     code: str
     name: Optional[str] = ""
     restart: Optional[bool] = True
+    repo_url: Optional[str] = ""
+    entry: Optional[str] = ""
 
 
 class JobAccessRequest(BaseModel):
@@ -583,6 +624,148 @@ def _detect_imports(code: str) -> list:
     return sorted(pkgs)[:20]  # sanity cap
 
 
+def _clone_repo(repo_url: str, target_dir: str, log: deque) -> bool:
+    """git clone --depth 1 a public repo into target_dir. Returns True on success."""
+    url = (repo_url or "").strip()
+    if not url:
+        return False
+    # Normalize github web URLs to .git for clone
+    m = re.match(r"^https?://github\.com/([^/]+)/([^/]+?)(?:\.git)?/?(?:tree/[^/]+)?/?$", url)
+    if m:
+        url = f"https://github.com/{m.group(1)}/{m.group(2)}.git"
+    # Block anything obviously non-http(s) (prevent ssh/file)
+    if not re.match(r"^https?://", url):
+        log.append(f"[system] ✗ repo URL must start with https://")
+        return False
+    try:
+        if os.path.exists(target_dir):
+            shutil.rmtree(target_dir, ignore_errors=True)
+        os.makedirs(target_dir, exist_ok=True)
+        log.append(f"[system] Cloning {url} …")
+        out, err, rc, timed = _run_subprocess(
+            ["git", "clone", "--depth", "1", "--quiet", url, target_dir],
+            os.path.dirname(target_dir), None, 120,
+        )
+        if rc != 0:
+            reason = (err or out or "").strip().splitlines()
+            log.append(f"[system] ✗ git clone failed: {(reason[-1] if reason else 'unknown error')[:200]}")
+            return False
+        log.append("[system] ✓ repo cloned")
+        return True
+    except Exception as e:
+        log.append(f"[system] ✗ git clone error: {str(e)[:200]}")
+        return False
+
+
+_ENTRY_CANDIDATES = [
+    # Python
+    ("python", "main.py"), ("python", "app.py"), ("python", "bot.py"),
+    ("python", "server.py"), ("python", "index.py"), ("python", "run.py"),
+    # Node
+    ("javascript", "index.js"), ("javascript", "server.js"),
+    ("javascript", "app.js"), ("javascript", "main.js"), ("javascript", "bot.js"),
+    # Ruby
+    ("ruby", "app.rb"), ("ruby", "main.rb"), ("ruby", "server.rb"),
+    # PHP
+    ("php", "index.php"), ("php", "main.php"),
+    # Bash
+    ("bash", "start.sh"), ("bash", "run.sh"), ("bash", "main.sh"),
+]
+
+def _detect_entry(jdir: str, code_overwrite: bool, log: deque) -> tuple:
+    """Inspect a repo checkout and pick (language, entryfile) + write an
+    index.html for static-only repos. Returns (lang, main_file) or (None, None)."""
+    if code_overwrite:
+        return None, None  # caller supplied inline code — wins
+    has_requirements = os.path.isfile(os.path.join(jdir, "requirements.txt"))
+    has_pyproject    = os.path.isfile(os.path.join(jdir, "pyproject.toml"))
+    has_package_json = os.path.isfile(os.path.join(jdir, "package.json"))
+    has_gemfile      = os.path.isfile(os.path.join(jdir, "Gemfile"))
+    has_compose      = os.path.isfile(os.path.join(jdir, "compose.yaml")) or os.path.isfile(os.path.join(jdir, "docker-compose.yml"))
+
+    # Static site fallback: if there is an index.html and NO backend manifest,
+    # serve the directory with python -m http.server (renders HTML/CSS/JS live).
+    static_index = os.path.join(jdir, "index.html")
+    is_static = os.path.isfile(static_index) and not (has_requirements or has_pyproject or has_package_json or has_gemfile)
+
+    for lang, fname in _ENTRY_CANDIDATES:
+        fp = os.path.join(jdir, fname)
+        if os.path.isfile(fp):
+            return lang, fp
+
+    if is_static:
+        # Static-page repo → synthesize a tiny launcher so http.server serves
+        # the folder on $PORT, giving the user a live URL like Render static sites.
+        launcher = os.path.join(jdir, "main.py")
+        with open(launcher, "w") as f:
+            f.write(
+                "import os, functools, http.server, socketserver\n"
+                "PORT = int(os.environ.get('PORT', '8080'))\n"
+                "class H(http.server.SimpleHTTPRequestHandler):\n"
+                "    def end_headers(self):\n"
+                "        self.send_header('Cache-Control','no-cache')\n"
+                "        super().end_headers()\n"
+                "Handler = functools.partial(H, directory='.')\n"
+                f"print(f'static site on http://0.0.0.0:{{PORT}}')\n"
+                "with socketserver.TCPServer(('0.0.0.0', PORT), Handler) as httpd:\n"
+                "    httpd.serve_forever()\n"
+            )
+        log.append("[system] detected static site (index.html) — serving via built-in HTTP server")
+        return "python", launcher
+
+    return None, None
+
+
+def _install_repo_deps(jdir: str, pylibs: Optional[str], lang: str, log: deque):
+    """Install repo-level dependency files (requirements.txt / package.json /
+    Gemfile) into the job's environment. Mirrors Render's build step."""
+    deadline = time.monotonic() + JOB_PIP_TIMEOUT_S
+    def _run(cmd, cwd):
+        remain = int(deadline - time.monotonic())
+        if remain <= 0:
+            log.append("[system] ✗ install budget exhausted")
+            return False
+        env = None
+        if pylibs:
+            env = dict(os.environ)
+            env["PYTHONPATH"] = pylibs + os.pathsep + env.get("PYTHONPATH", "")
+        o, e, rc, _ = _run_subprocess(cmd, cwd, None, remain, env=env)
+        lines = [ln for ln in ((e or "") + "\n" + (o or "")).splitlines() if ln.strip()]
+        if rc != 0:
+            log.append(f"[system] ✗ {' '.join(cmd[:3])}… failed: {(lines[-1] if lines else 'unknown')[:200]}")
+            return False
+        return True
+
+    if lang == "python":
+        if os.path.isfile(os.path.join(jdir, "requirements.txt")):
+            log.append("[system] pip install -r requirements.txt …")
+            if pylibs:
+                if not _run(["python3","-m","pip","install","--quiet","--target",pylibs,"-r","requirements.txt"], jdir):
+                    return False
+            else:
+                if not _run(["python3","-m","pip","install","--quiet","-r","requirements.txt"], jdir):
+                    return False
+            log.append("[system] ✓ requirements.txt installed")
+        if os.path.isfile(os.path.join(jdir, "pyproject.toml")):
+            log.append("[system] pip install . (pyproject.toml) …")
+            if pylibs:
+                _run(["python3","-m","pip","install","--quiet","--target",pylibs,"."], jdir)
+            else:
+                _run(["python3","-m","pip","install","--quiet","."], jdir)
+    elif lang == "javascript":
+        has_npm = os.path.isfile(os.path.join(jdir, "package.json"))
+        if has_npm:
+            log.append("[system] npm install --omit=dev …")
+            if not _run(["npm","install","--omit=dev","--no-audit","--no-fund","--loglevel=error"], jdir):
+                return False
+            log.append("[system] ✓ node_modules installed")
+    elif lang == "ruby":
+        if os.path.isfile(os.path.join(jdir, "Gemfile")):
+            log.append("[system] bundle install …")
+            _run(["bundle","install","--quiet"], jdir)
+    return True
+
+
 def _pkg_display_name(spec: str) -> str:
     """'qrcode[pil]' -> 'qrcode', 'psycopg2-binary==2.9' -> 'psycopg2-binary'."""
     return re.split(r"[<>=!~\[]", spec, 1)[0].strip()
@@ -605,12 +788,46 @@ def _installed_version(name: str, pylibs: str) -> str:
         return "?"
 
 
-def _prepare_and_run(j: dict, reqs: list) -> None:
-    """Background worker: pip install a job's deps ONE BY ONE (so the log can
-    credit — or blame — each package with its exact version), THEN start it.
-    Detached on purpose: creation returns instantly with status=installing,
-    so even big installs never run into HTTP/proxy timeouts."""
-    if reqs:
+def _prepare_and_run(j: dict, reqs: list, is_repo: bool = False) -> None:
+    """Background worker: install deps (repo manifests first, then inline imports),
+    then start the job."""
+    # Repo-mode: install requirements.txt / package.json / Gemfile first
+    if is_repo:
+        ok = _install_repo_deps(j["dir"], j.get("pylibs"), j["lang"], j["log"])
+        if not ok:
+            j["status"] = "install_failed"
+            j["log"].append("[system] Repo install failed — check logs and press Restart.")
+            return
+        if reqs:
+            # Union: also auto-install anything imported but not in requirements.txt
+            j["log"].append(f"[system] checking imports for extra libraries…")
+            deadline = time.monotonic() + JOB_PIP_TIMEOUT_S
+            missed = []
+            for spec in reqs:
+                remain = int(deadline - time.monotonic())
+                if remain <= 0: break
+                name = _pkg_display_name(spec)
+                # Skip if already satisfied by import (fast check)
+                chk = subprocess.run(
+                    ["python3","-c",f"import {name}"],
+                    capture_output=True,
+                    env=dict(os.environ, PYTHONPATH=(j.get("pylibs") or "")+os.pathsep+os.environ.get("PYTHONPATH","")) if j.get("pylibs") else None,
+                    timeout=8,
+                )
+                if chk.returncode == 0: continue
+                tout, terr, tcode, _ = _run_subprocess(
+                    ["python3","-m","pip","install","--quiet","--target",j["pylibs"],spec],
+                    j["dir"], None, remain,
+                    env=dict(os.environ, PYTHONPATH=j["pylibs"]+os.pathsep+os.environ.get("PYTHONPATH","")),
+                )
+                if tcode == 0:
+                    j["log"].append(f"[system] ✓ {name} installed")
+                else:
+                    missed.append(name)
+            if missed:
+                j["log"].append(f"[system] ! {len(missed)} package(s) failed to install (non-fatal if vendored)")
+        j["log"].append("[system] dependencies ready")
+    elif reqs:
         j["log"].append(f"[system] Installing libraries: {', '.join(reqs)}")
         deadline = time.monotonic() + JOB_PIP_TIMEOUT_S
         failed = None
@@ -629,7 +846,6 @@ def _prepare_and_run(j: dict, reqs: list) -> None:
                 ver = _installed_version(name, j["pylibs"])
                 j["log"].append(f"[system] ✓ {name}=={ver} installed")
             else:
-                # Surface the real reason: last meaningful pip output line.
                 lines = [ln for ln in ((terr or "") + "\n" + (tout or "")).splitlines() if ln.strip()]
                 reason = ("pip timed out" if ttimed else (lines[-1].strip() if lines else "unknown error"))
                 j["log"].append(f"[system] ✗ {name} failed: {reason[:240]}")
@@ -660,6 +876,7 @@ def _job_public(j: dict) -> dict:
         # access_key only reaches the main site (this API is secret-guarded) —
         # it builds the private share-link ?key= for the job owner.
         "access_key": j.get("access_key") if not j.get("web_public", True) else None,
+        "dir": j.get("dir"),
     }
 
 
@@ -753,30 +970,94 @@ def job_start(req: JobStartRequest, authorization: Optional[str] = Header(None))
         raise HTTPException(429, detail=f"Runner at capacity ({active}/{MAX_BG_JOBS} jobs). Stop one first.")
 
     job_id = uuid.uuid4().hex[:12]
-    jdir = tempfile.mkdtemp(prefix=f"job_{job_id}_")
+    # Persistent workspace — bot's cwd. Same directory reused across
+    # Stop/Restart cycles (and across full redeploys when /app/data is on
+    # a persistent disk). Code files are overwritten below; user-created
+    # files (SQLite DBs, sessions, caches) are LEFT UNTOUCHED.
+    jdir = _job_dir(job_id)
+    repo_url = (req.repo_url or "").strip()
+    user_entry = (req.entry or "").strip()
+
+    # If a repo URL was given, clone the whole repository into jdir first.
+    repo_log = deque(maxlen=JOB_LOG_LINES)
+    if repo_url:
+        if not _clone_repo(repo_url, jdir, repo_log):
+            # Cleanup and surface clone error
+            shutil.rmtree(jdir, ignore_errors=True)
+            raise HTTPException(400, detail="Repo clone failed:\n" + "\n".join(repo_log)[-2000:])
+
+    # Detect entry point — either user-supplied, auto-detected, or falls back to inline code.
+    inline_has_code = bool(code.strip())
+    detected_lang, detected_src = None, None
+    if user_entry:
+        # Explicit entry from user ("main.py", "app.js", "src/bot.py")
+        fp = os.path.join(jdir, user_entry)
+        if not os.path.isfile(fp):
+            raise HTTPException(400, detail=f"Entry file '{user_entry}' not found in repo.")
+        ext = user_entry.rsplit(".",1)[-1].lower()
+        ext_map = {"py":"python","js":"javascript","rb":"ruby","php":"php","sh":"bash"}
+        detected_lang = ext_map.get(ext)
+        detected_src = fp
+        if detected_lang and detected_lang in LANGS:
+            lang = detected_lang
+    else:
+        dl, ds = _detect_entry(jdir, inline_has_code and not repo_url, repo_log)
+        if dl and ds:
+            detected_lang, detected_src = dl, ds
+            if not inline_has_code:
+                lang = dl
+
+    # Fallback language for pure-inline (no repo, no detected entry)
+    if lang not in LANGS:
+        lang = "python"
     cfg = LANGS[lang]
-    src = os.path.join(jdir, "main." + cfg["ext"])
-    binf = os.path.join(jdir, "main.bin")
-    with open(src, "w") as f:
-        f.write(code[:262144])
+
+    if detected_src:
+        src = detected_src
+        # Rename the detected file to match our LANGS expectation (main.<ext>)
+        # only if it isn't already. We keep the original AND write a symlink-style
+        # duplicate-free wrapper so existing relative imports from main.py still work.
+        expected = os.path.join(jdir, "main." + cfg["ext"])
+        if os.path.abspath(src) != os.path.abspath(expected):
+            # Launcher wrapper: just exec the real entry.
+            wrapper = f"import runpy, sys; sys.path.insert(0, {repr(jdir)}); runpy.run_path({repr(src)}, run_name='__main__')"
+            if cfg["ext"] == "py":
+                with open(expected, "w") as f: f.write(wrapper)
+                src = expected
+            elif cfg["ext"] == "js":
+                with open(expected, "w") as f:
+                    rel = os.path.relpath(src, jdir)
+                    f.write(f"require('./{rel.replace(chr(92),'/')}');\n")
+                src = expected
+            # other langs run from detected_src directly
+            else:
+                src = detected_src
+        binf = os.path.join(jdir, "main.bin")
+    else:
+        src = os.path.join(jdir, "main." + cfg["ext"])
+        binf = os.path.join(jdir, "main.bin")
+        with open(src, "w") as f:
+            f.write(code[:262144])
 
     # Compiled languages: compile ONCE before the job is considered started.
-    if cfg["compile"]:
+    if cfg.get("compile"):
         ccmd = [c.replace("{file}", src).replace("{bin}", binf).replace("{dir}", jdir) for c in cfg["compile"]]
         cout, cerr, ccode, _ = _run_subprocess(ccmd, jdir, None, MAX_TIME_MS / 1000)
         if ccode != 0:
-            shutil.rmtree(jdir, ignore_errors=True)
             raise HTTPException(400, detail="Compilation failed:\n" + (cerr or cout)[:3000])
 
-    # Dependencies: AUTO-DETECTED from the code's own imports (plus optional
-    # "# requirements:" header). Installed in a BACKGROUND thread so this HTTP
-    # request returns instantly — the job shows status "installing" while pip
-    # works, and the frontend gets to show its loading animation. ✨
-    reqs = _detect_imports(code)
+    # Dependencies: AUTO-DETECTED from inline code OR repo manifest.
+    reqs = []
     pylibs = None
-    if reqs:
+    if repo_url and detected_src:
+        # Install from repo manifests first (requirements.txt / package.json / Gemfile)
         pylibs = os.path.join(jdir, "pylibs")
         os.makedirs(pylibs, exist_ok=True)
+    else:
+        reqs = _detect_imports(code)
+        if reqs:
+            pylibs = os.path.join(jdir, "pylibs")
+            os.makedirs(pylibs, exist_ok=True)
 
     job = {
         "id": job_id,
@@ -787,30 +1068,27 @@ def job_start(req: JobStartRequest, authorization: Optional[str] = Header(None))
         "bin": binf,
         "pylibs": pylibs,
         "proc": None,
-        "status": "installing" if reqs else "starting",
+        "status": "installing",
         "log": deque(maxlen=JOB_LOG_LINES),
         "restarts": 0,
         "restart_enabled": bool(req.restart),
         "stop_requested": False,
         "started_at": time.time(),
         "last_proxy_time": time.time(),
-        # Public web identity — assigned ONCE here so crash auto-restarts keep
-        # the exact same /live/{slug}/ address and port.
         "port": _alloc_port(),
         "web": False,
         "web_slug": _slugify(req.name or job_id),
         "web_public": True,
         "access_key": secrets.token_urlsafe(12),
+        "repo_url": repo_url or None,
     }
     with _jobs_lock:
         _jobs[job_id] = job
-    if reqs:
-        job["log"].append("[system] Job queued — preparing libraries…")
-        threading.Thread(target=_prepare_and_run, args=(job, reqs), daemon=True).start()
-    else:
-        # No dependencies — start right away.
-        _spawn(job)
-    logger.info("Job %s (%s/%s) created", job_id, job["name"], lang)
+    for line in repo_log:
+        job["log"].append(line)
+    job["log"].append(f"[system] entry: {os.path.relpath(src, jdir)} ({lang})")
+    threading.Thread(target=_prepare_and_run, args=(job, reqs, repo_url and detected_src), daemon=True).start()
+    logger.info("Job %s (%s/%s) created (repo=%s)", job_id, job["name"], lang, bool(repo_url))
     return _job_public(job)
 
 
@@ -846,10 +1124,10 @@ def job_stop(job_id: str, authorization: Optional[str] = Header(None)):
     j["web"] = False
     with _jobs_lock:
         j["port"] = None
-    # Free the disk while the job definition is still visible.
-    if os.path.isdir(j["dir"]):
-        shutil.rmtree(j["dir"], ignore_errors=True)
-    logger.info("Job %s stopped", job_id)
+    # IMPORTANT: do NOT remove j["dir"] — bot's database files (SQLite,
+    # JSON sessions, uploaded data, referral-bot state…) must survive
+    # Stop/Restart and admin redeploys. The workspace is reused on next _spawn.
+    logger.info("Job %s stopped (workspace preserved at %s)", job_id, j.get("dir"))
     return _job_public(j)
 
 
@@ -862,6 +1140,122 @@ def job_access(job_id: str, req: JobAccessRequest, authorization: Optional[str] 
         raise HTTPException(404, detail="Job not found.")
     j["web_public"] = bool(req.public)
     j["log"].append(f"[system] web access set to {'PUBLIC' if j['web_public'] else 'PRIVATE'}")
+    return _job_public(j)
+
+
+@app.delete("/internal/jobs/{job_id}")
+def job_delete(job_id: str, authorization: Optional[str] = Header(None)):
+    """Permanently delete a job — kill process AND wipe its persistent
+    workspace (ONLY when the user explicitly deletes from the dashboard)."""
+    _check_secret(authorization)
+    j = _jobs.pop(job_id, None)
+    if not j:
+        raise HTTPException(404, detail="Job not found.")
+    j["stop_requested"] = True
+    _kill_job_tree(j)
+    # Only now — explicit delete — wipe the workspace (bot DB included).
+    jdir = j.get("dir")
+    if jdir and os.path.isdir(jdir):
+        shutil.rmtree(jdir, ignore_errors=True)
+    with _jobs_lock:
+        j["port"] = None
+    logger.info("Job %s deleted (workspace removed: %s)", job_id, jdir)
+    return {"deleted": job_id}
+
+
+class JobUpdateRequest(BaseModel):
+    """Edit-and-redeploy in place: preserve the SAME job_id, port, web_slug,
+    and workspace directory so bot databases/sessions are NOT wiped — only
+    main.* is overwritten with the new code (or a new repo cloned)."""
+    name: Optional[str] = None
+    language: Optional[str] = None
+    code: Optional[str] = None
+    restart: Optional[bool] = True
+    repo_url: Optional[str] = ""
+    entry: Optional[str] = ""
+
+
+@app.patch("/internal/jobs/{job_id}")
+def job_update(job_id: str, req: JobUpdateRequest, authorization: Optional[str] = Header(None)):
+    """Edit + redeploy a job IN PLACE — same id/slug/port/dir, bot data kept."""
+    _check_secret(authorization)
+    j = _jobs.get(job_id)
+    if not j:
+        raise HTTPException(404, detail="Job not found.")
+
+    # Kill current process (if running) but keep the dir.
+    j["stop_requested"] = True
+    _kill_job_tree(j)
+    j["stop_requested"] = False
+    j["restarts"] = 0
+
+    # Apply updates
+    if req.name is not None:
+        new_name = req.name.strip()[:60] or j["name"]
+        j["name"] = new_name
+    new_lang = (req.language or j["lang"]).lower().strip()
+    if new_lang != j["lang"] and new_lang in LANGS:
+        j["lang"] = new_lang
+    cfg = LANGS[j["lang"]]
+
+    if req.code is not None and req.code.strip():
+        # Re-derive file/bin paths in case language changed
+        jdir = j["dir"]
+        j["file"] = os.path.join(jdir, "main." + cfg["ext"])
+        j["bin"] = os.path.join(jdir, "main.bin")
+        # Overwrite ONLY main.* — user data (database.db, session.json,
+        # data/, pylibs/) is untouched. This is what keeps referral-bot
+        # state alive across admin code fixes.
+        with open(j["file"], "w") as f:
+            f.write(req.code[:262144])
+        # Re-detect deps (only if imports changed — install missing ones).
+        reqs = _detect_imports(req.code)
+        if reqs:
+            pylibs = os.path.join(jdir, "pylibs")
+            os.makedirs(pylibs, exist_ok=True)
+            j["pylibs"] = pylibs
+            j["log"].append(f"[system] Code updated — checking libraries…")
+            j["status"] = "installing"
+            threading.Thread(target=_prepare_and_run, args=(j, reqs), daemon=True).start()
+            return _job_public(j)
+        else:
+            j["pylibs"] = j.get("pylibs") or None
+
+    # Re-allocate port if it was released during stop
+    if not j.get("port"):
+        with _jobs_lock:
+            j["port"] = _alloc_port()
+
+    j["log"].append("[system] Code updated — restarting (data preserved)")
+    j["status"] = "starting"
+    _spawn(j)
+    logger.info("Job %s updated in place (dir: %s)", job_id, j.get("dir"))
+    return _job_public(j)
+
+
+
+
+@app.post("/internal/jobs/{job_id}/restart")
+def job_restart(job_id: str, authorization: Optional[str] = Header(None)):
+    """Restart a job IN-PLACE: same id, same slug, same port, same dir.
+    Preserves the workspace (database.db, session.json, ...) — crucial for
+    referral bots, scrapers, anything that writes state to cwd."""
+    _check_secret(authorization)
+    j = _jobs.get(job_id)
+    if not j:
+        raise HTTPException(404, detail="Job not found.")
+    # Stop current process (keeps dir)
+    j["stop_requested"] = True
+    _kill_job_tree(j)
+    j["stop_requested"] = False
+    j["restarts"] = 0
+    # Re-allocate port if released
+    if not j.get("port"):
+        with _jobs_lock:
+            j["port"] = _alloc_port()
+    j["log"].append("[system] restarting in place (workspace preserved)")
+    _spawn(j)
+    logger.info("Job %s restarted in place (dir: %s)", job_id, j.get("dir"))
     return _job_public(j)
 
 
@@ -1062,6 +1456,131 @@ async def live_ws(websocket: WebSocket, slug: str, full_path: str = ""):
         await websocket.close()
     except Exception:
         return
+
+
+# ============================================================
+# INTERACTIVE TERMINAL (Termux-style PTY over WebSocket)
+# ============================================================
+from runner import terminal as _term
+
+
+class TerminalCreateRequest(BaseModel):
+    shell: Optional[str] = "bash"
+    cols: Optional[int] = 90
+    rows: Optional[int] = 28
+
+
+class TerminalListRequest(BaseModel):
+    pass
+
+
+@app.post("/internal/terminals", status_code=201)
+def terminal_create(req: TerminalCreateRequest, authorization: Optional[str] = Header(None), x_user_id: Optional[str] = Header(None)):
+    """Create (or reuse) a terminal session for a user."""
+    _check_secret(authorization)
+    try:
+        user_id = int(x_user_id or "0")
+    except ValueError:
+        raise HTTPException(400, detail="x-user-id required.")
+    if user_id <= 0:
+        raise HTTPException(400, detail="auth required.")
+    info = _term.manager.create(user_id, shell=req.shell or "bash", cols=req.cols or 90, rows=req.rows or 28)
+    # Build a connect URL relative to this runner
+    return {
+        "id": info["id"],
+        "ticket": info["ticket"],
+        "shell": info["shell"],
+        "home": info["home"],
+    }
+
+
+@app.get("/internal/terminals")
+def terminal_list(authorization: Optional[str] = Header(None), x_user_id: Optional[str] = Header(None)):
+    _check_secret(authorization)
+    try:
+        user_id = int(x_user_id or "0")
+    except ValueError:
+        raise HTTPException(400, detail="x-user-id required.")
+    return {"terminals": _term.manager.list_for(user_id)}
+
+
+@app.websocket("/internal/terminal/ws")
+async def terminal_ws(websocket: WebSocket):
+    """Bidirectional PTY bridge. Client must send ?ticket=... on connect."""
+    await websocket.accept()
+    q = websocket.query_params
+    ticket = (q.get("ticket") or "").strip()
+    if not ticket:
+        try:
+            await websocket.send_json({"type": "error", "msg": "missing ticket"})
+            await websocket.close(4401)
+        except Exception:
+            pass
+        return
+    sess = _term.manager.by_ticket(ticket)
+    if not sess:
+        try:
+            await websocket.send_json({"type": "error", "msg": "invalid/expired ticket"})
+            await websocket.close(4404)
+        except Exception:
+            pass
+        return
+
+    # Run attach (which starts the output-drain task) concurrently with the
+    # inbound-message loop. When either side finishes we cancel the other.
+    attach_task = asyncio.create_task(sess.attach(websocket))
+    inbound_task = asyncio.create_task(_ws_inbound_loop(websocket, sess))
+    try:
+        done, pending = await asyncio.wait(
+            [attach_task, inbound_task],
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        for t in pending:
+            t.cancel()
+        for t in done:
+            try:
+                await t
+            except Exception:
+                pass
+    except Exception:
+        pass
+    finally:
+        for t in (attach_task, inbound_task):
+            if not t.done():
+                t.cancel()
+        sess.detach(websocket)
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+
+
+async def _ws_inbound_loop(websocket, sess):
+    """Read JSON messages from the WS and dispatch them to the session."""
+    import json as _json
+    while True:
+        try:
+            msg = await websocket.receive_text()
+        except Exception:
+            return
+        try:
+            evt = _json.loads(msg)
+        except Exception:
+            continue
+        t = evt.get("type")
+        try:
+            if t == "in":
+                sess.write(evt.get("data", "") or "")
+            elif t == "resize":
+                sess.resize(int(evt.get("cols", 90)), int(evt.get("rows", 28)))
+            elif t == "setShell":
+                sh = (evt.get("shell") or "").strip()
+                if sh in _term.SHELLS:
+                    sess.switch_shell(sh)
+            elif t == "ping":
+                await websocket.send_json({"type": "pong"})
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":

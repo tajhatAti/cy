@@ -4,7 +4,7 @@ import logging
 import requests
 from fastapi import HTTPException
 
-logger = logging.getLogger("ahad-co-app")
+logger = logging.getLogger("codenest-app")
 
 BREVO_API_URL = "https://api.brevo.com/v3/smtp/email"
 OTP_EXPIRY_MINUTES = int(os.getenv("OTP_EXPIRY_MINUTES", "10"))
@@ -13,7 +13,7 @@ OTP_EXPIRY_MINUTES = int(os.getenv("OTP_EXPIRY_MINUTES", "10"))
 def send_email(receiver_email: str, subject: str, otp: str, username: str, purpose: str):
     brevo_api_key = os.getenv("BREVO_API_KEY", "").strip()
     sender_email = os.getenv("SENDER_EMAIL", "").strip()
-    sender_name = os.getenv("SENDER_NAME", "Ahad Co").strip()
+    sender_name = os.getenv("SENDER_NAME", "CodeNest").strip()
 
     if not brevo_api_key or not sender_email:
         logger.error("BREVO_API_KEY or SENDER_EMAIL missing.")
@@ -34,7 +34,7 @@ def send_email(receiver_email: str, subject: str, otp: str, username: str, purpo
           </div>
           <p style="color:#A0A0B2;font-size:13px;">This code expires in {OTP_EXPIRY_MINUTES} minutes.
           If you did not request this, you can safely ignore this email.</p>
-          <p style="color:#A0A0B2;font-size:12px;margin-top:24px;">— Ahad Co</p>
+          <p style="color:#A0A0B2;font-size:12px;margin-top:24px;">— CodeNest</p>
         </div>
       </body>
     </html>

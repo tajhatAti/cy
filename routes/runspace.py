@@ -11,10 +11,26 @@ class JobCreateRequest(BaseModel):
     name: str
     language: str
     code: str
+    repo_url: Optional[str] = None
+    entry: Optional[str] = None
+
+
+class JobUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    language: Optional[str] = None
+    code: Optional[str] = None
+    repo_url: Optional[str] = None
+    entry: Optional[str] = None
+
+
+class GithubImportRequest(BaseModel):
+    url: str
 
 
 import asyncio
 import json
+import re
+from urllib.parse import urlparse
 
 from fastapi.responses import StreamingResponse
 
@@ -105,24 +121,43 @@ def create_job(payload: JobCreateRequest, request: Request, authorization: Optio
     user, _ = get_current_user_and_session(authorization)
     rate_limit_user(user["id"], "exec")
 
-    name = payload.name.strip()[:60]
+    name = (payload.name or "").strip()[:60]
+    repo_url = (payload.repo_url or "").strip()
+    entry = (payload.entry or "").strip()
+    if not name and repo_url:
+        m = re.search(r"github\.com/[^/]+/([^/]+)", repo_url)
+        name = (m.group(1) if m else "repo").replace(".git","")[:60]
     if not name:
         raise HTTPException(status_code=422, detail="Give the job a name.")
+    if not (payload.code or "").strip() and not repo_url:
+        raise HTTPException(status_code=422, detail="Provide code or a repo URL.")
 
+    # Per-user name uniqueness (case-insensitive)
     conn = get_db_connection()
     try:
+        dup = conn.execute(
+            "SELECT id FROM jobs WHERE user_id = ? AND LOWER(name) = LOWER(?)",
+            (user["id"], name),
+        ).fetchone()
+        if dup:
+            conn.close()
+            raise HTTPException(status_code=409, detail=f"You already have a job named \u201c{name}\u201d \u2014 choose a different name.")
         cnt = conn.execute("SELECT COUNT(*) AS c FROM jobs WHERE user_id = ?", (user["id"],)).fetchone()
         if (dict(cnt)["c"] if cnt else 0) >= MAX_JOBS_PER_USER:
+            conn.close()
             raise HTTPException(status_code=429, detail=f"Max {MAX_JOBS_PER_USER} jobs per account (free tier).")
     except HTTPException:
-        conn.close()
         raise
-    conn.close()
 
-    resp = runner_client._runner_http("POST", "/internal/jobs", {
-        "language": payload.language, "code": payload.code,
+    body = {
+        "language": payload.language or "python",
+        "code": payload.code or "",
         "name": f"u{user['id']}-{name}",
-    })
+    }
+    if repo_url:
+        body["repo_url"] = repo_url
+        if entry: body["entry"] = entry
+    resp = runner_client._runner_http("POST", "/internal/jobs", body)
     if resp.status_code == 201:
         info = resp.json()
     elif resp.status_code in (401, 403):
@@ -187,6 +222,38 @@ def list_jobs(authorization: Optional[str] = Header(None)):
     return {"jobs": jobs, "runner": runner_state, "max_per_user": MAX_JOBS_PER_USER}
 
 
+@router.get("/api/jobs/{job_id}")
+def get_job(job_id: int, authorization: Optional[str] = Header(None)):
+    """Return a single job WITH its saved code (for the Edit button)."""
+    user, _ = get_current_user_and_session(authorization)
+    row = _get_own_job(job_id, user)
+    row = dict(row)
+    # Attach live status (best-effort)
+    rid = row.get("runner_job_id")
+    if rid:
+        try:
+            resp = runner_client._runner_http("GET", f"/internal/jobs/{rid}")
+            if resp.status_code == 200:
+                info = resp.json()
+                row["status"] = info.get("status")
+                row["uptime_s"] = info.get("uptime_s", 0)
+                row["restarts"] = info.get("restarts", 0)
+                # Populate web URL fields
+                info2 = dict(info)
+                info2.update(runner_client._job_web_fields(info))
+                row["web"] = info2.get("web")
+                row["web_url"] = info2.get("web_url")
+                row["web_private_url"] = info2.get("web_private_url")
+                row["web_public"] = info2.get("web_public", True)
+            else:
+                row["status"] = "offline"
+        except HTTPException:
+            row["status"] = "offline"
+    else:
+        row["status"] = "offline"
+    return row
+
+
 @router.get("/api/jobs/{job_id}/logs")
 def job_logs(job_id: int, authorization: Optional[str] = Header(None)):
     user, _ = get_current_user_and_session(authorization)
@@ -216,12 +283,32 @@ async def job_logs_stream(job_id: int, token: Optional[str] = None):
         raise HTTPException(status_code=401, detail="Not authenticated.")
     conn = get_db_connection()
     try:
+        # Match deps.get_current_user_and_session: lazy migrate + honour expiry
+        from routes.deps import _ensure_expires_column
+        _ensure_expires_column(conn)
         session_row = conn.execute("SELECT * FROM sessions WHERE token = ?", (token,)).fetchone()
         if not session_row:
             raise HTTPException(status_code=401, detail="Session expired. Please sign in again.")
+        try:
+            from datetime import datetime, timezone, timedelta
+            exp = session_row["expires_at"] if "expires_at" in session_row.keys() else None
+            if exp:
+                exp_dt = datetime.strptime(exp, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+                if datetime.now(timezone.utc) > exp_dt:
+                    conn.execute("DELETE FROM sessions WHERE id = ?", (session_row["id"],))
+                    conn.commit()
+                    raise HTTPException(status_code=401, detail="Session expired. Please sign in again.")
+        except HTTPException:
+            raise
+        except Exception:
+            pass
+        conn.execute("UPDATE sessions SET last_seen = ? WHERE id = ?", (now_utc_str(), session_row["id"]))
+        conn.commit()
         user_row = conn.execute("SELECT * FROM users WHERE id = ?", (session_row["user_id"],)).fetchone()
         if not user_row:
             raise HTTPException(status_code=401, detail="Account not found.")
+        if "is_suspended" in user_row.keys() and user_row["is_suspended"]:
+            raise HTTPException(status_code=401, detail="This account is suspended.")
     finally:
         conn.close()
 
@@ -258,6 +345,74 @@ async def job_logs_stream(job_id: int, token: Optional[str] = None):
     )
 
 
+@router.get("/api/jobs/{job_id}/files")
+def list_job_files(job_id: int, authorization: Optional[str] = Header(None)):
+    """List candidate downloadable files from the job workspace (best-effort).
+    Walks the runner job dir and returns regular files with sizes. Used by the
+    drawer "Download database" button to offer the most-likely DB file first.
+    """
+    import os
+    from pathlib import Path
+    user, _ = get_current_user_and_session(authorization)
+    row = _get_own_job(job_id, user)
+    rid = row.get("runner_job_id")
+    out = []
+    if rid:
+        try:
+            resp = runner_client._runner_http("GET", f"/internal/jobs/{rid}")
+            if resp.status_code == 200:
+                info = resp.json()
+                jdir = info.get("dir") or ""
+                if jdir and os.path.isdir(jdir):
+                    # Skip system/hidden dirs (pylibs, .git, node_modules)
+                    skip_dirs = {"pylibs", ".git", "node_modules", "__pycache__", ".venv", "venv"}
+                    root = Path(jdir)
+                    for p in root.rglob("*"):
+                        try:
+                            if not p.is_file(): continue
+                            rel = p.relative_to(root)
+                            if any(part in skip_dirs for part in rel.parts): continue
+                            size = p.stat().st_size
+                            if size > 32 * 1024 * 1024: continue  # cap at 32MB
+                            out.append({"path": str(rel).replace(os.sep, "/"), "size": size})
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+    # Sort databases (.db/.sqlite/.sqlite3) first, then by path
+    out.sort(key=lambda f: (0 if f["path"].lower().endswith((".db",".sqlite",".sqlite3",".json")) else 1, f["path"]))
+    return {"files": out}
+
+
+@router.get("/api/jobs/{job_id}/files/{file_path:path}")
+def download_job_file(job_id: int, file_path: str, authorization: Optional[str] = Header(None)):
+    """Download a single file from the job workspace."""
+    import os
+    import mimetypes
+    from pathlib import Path
+    from fastapi.responses import FileResponse
+    user, _ = get_current_user_and_session(authorization)
+    row = _get_own_job(job_id, user)
+    rid = row.get("runner_job_id")
+    if not rid:
+        raise HTTPException(status_code=404, detail="Job not running.")
+    resp = runner_client._runner_http("GET", f"/internal/jobs/{rid}")
+    if resp.status_code != 200:
+        raise HTTPException(status_code=404, detail="Job workspace unavailable.")
+    info = resp.json()
+    jdir = info.get("dir") or ""
+    # Prevent path traversal
+    target = (Path(jdir) / file_path).resolve()
+    jroot = Path(jdir).resolve()
+    if not str(target).startswith(str(jroot) + os.sep) and target != jroot:
+        raise HTTPException(status_code=400, detail="Invalid file path.")
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="File not found.")
+    ctype, _ = mimetypes.guess_type(str(target))
+    return FileResponse(str(target), filename=target.name,
+                        media_type=ctype or "application/octet-stream")
+
+
 @router.post("/api/jobs/{job_id}/stop")
 def stop_job(job_id: int, authorization: Optional[str] = Header(None)):
     user, _ = get_current_user_and_session(authorization)
@@ -272,36 +427,50 @@ def stop_job(job_id: int, authorization: Optional[str] = Header(None)):
 
 @router.post("/api/jobs/{job_id}/restart")
 def restart_job(job_id: int, request: Request, authorization: Optional[str] = Header(None)):
+    """Restart a job — IN-PLACE when the runner still knows about it (preserves
+    workspace / database.db / session files). Cold-start (fresh worker slot)
+    only as a fallback after a full runner restart."""
     user, _ = get_current_user_and_session(authorization)
     rate_limit_user(user["id"], "exec")
     row = _get_own_job(job_id, user)
 
     rid = row.get("runner_job_id")
+    info = None
+
     if rid:
-        try:
-            runner_client._runner_http("POST", f"/internal/jobs/{rid}/stop")
-        except HTTPException:
-            pass  # old copy may already be gone (runner restart) — fine
+        # Fast path: in-place restart on the SAME job id/dir/port/slug.
+        # This is what keeps referral-bot databases alive across restarts.
+        resp = runner_client._runner_http("POST", f"/internal/jobs/{rid}/restart")
+        if resp.status_code == 200:
+            info = resp.json()
 
-    resp = runner_client._runner_http("POST", "/internal/jobs", {
-        "language": row["language"], "code": row["code"],
-        "name": f"u{user['id']}-{row['name']}",
-    })
-    if resp.status_code == 201:
-        info = resp.json()
-    else:
+    if info is None:
+        # Cold-start fallback: runner was restarted and lost its in-memory
+        # job record. Create fresh; the workspace dir is keyed by the
+        # *runner's new* job id, so a newly-created bot db starts empty
+        # ( unavoidable without a persistent disk mapping).
+        resp = runner_client._runner_http("POST", "/internal/jobs", {
+            "language": row["language"], "code": row["code"],
+            "name": f"u{user['id']}-{row['name']}",
+        })
+        if resp.status_code == 201:
+            info = resp.json()
+        else:
+            try:
+                detail = resp.json().get("detail", "Runner rejected the job.")
+            except Exception:
+                detail = "Runner rejected the job."
+            raise HTTPException(status_code=502, detail=detail)
+        conn = get_db_connection()
         try:
-            detail = resp.json().get("detail", "Runner rejected the job.")
-        except Exception:
-            detail = "Runner rejected the job."
-        raise HTTPException(status_code=502, detail=detail)
+            conn.execute(
+                "UPDATE jobs SET runner_job_id = ?, updated_at = ? WHERE id = ?",
+                (info["id"], now_utc_str(), job_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
 
-    conn = get_db_connection()
-    try:
-        conn.execute("UPDATE jobs SET runner_job_id = ?, updated_at = ? WHERE id = ?", (info["id"], now_utc_str(), job_id))
-        conn.commit()
-    finally:
-        conn.close()
     info["job_db_id"] = job_id
     info.update(runner_client._job_web_fields(info))
     return info
@@ -309,6 +478,109 @@ def restart_job(job_id: int, request: Request, authorization: Optional[str] = He
 
 class JobAccessToggle(BaseModel):
     public: bool = True
+
+
+@router.patch("/api/jobs/{job_id}")
+def update_job(job_id: int, payload: JobUpdateRequest, request: Request, authorization: Optional[str] = Header(None)):
+    """Edit + redeploy a job IN PLACE — preserves the runner job id, its
+    /live/{slug}/ URL, reserved port, and most importantly the bot's
+    persistent workspace (SQLite DBs, session files, referral counts, …).
+    Use this for bug fixes / feature adds: users' data NEVER gets wiped."""
+    user, _ = get_current_user_and_session(authorization)
+    rate_limit_user(user["id"], "exec")
+    row = _get_own_job(job_id, user)
+    rid = row.get("runner_job_id")
+    if not rid:
+        raise HTTPException(status_code=409, detail="Job has no runner id — press Restart once, then retry edit.")
+
+    # Persist the new code/name/language in our DB FIRST (source of truth
+    # for future restarts after a full runner redeploy).
+    new_name = (payload.name or row["name"]).strip()[:60]
+    new_lang = (payload.language or row["language"]).strip()
+    new_code = payload.code if payload.code is not None else row["code"]
+    new_repo = (payload.repo_url or "").strip()
+    new_entry = (payload.entry or "").strip()
+    now = now_utc_str()
+    if new_name != (row["name"] or ""):
+        conn0 = get_db_connection()
+        try:
+            dup = conn0.execute(
+                "SELECT id FROM jobs WHERE user_id = ? AND id != ? AND LOWER(name) = LOWER(?)",
+                (user["id"], job_id, new_name),
+            ).fetchone()
+            if dup:
+                raise HTTPException(status_code=409, detail=f"You already have a job named \u201c{new_name}\u201d \u2014 choose a different name.")
+        finally:
+            conn0.close()
+    conn = get_db_connection()
+    try:
+        conn.execute(
+            "UPDATE jobs SET name = ?, language = ?, code = ?, updated_at = ? WHERE id = ?",
+            (new_name, new_lang, new_code, now, job_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    # Forward to runner for in-place update (same dir, same slug, same port).
+    patch_body = {"name": new_name, "language": new_lang, "code": new_code}
+    if new_repo:
+        patch_body["repo_url"] = new_repo
+        if new_entry: patch_body["entry"] = new_entry
+    resp = runner_client._runner_http("PATCH", f"/internal/jobs/{rid}", patch_body)
+    if resp.status_code == 200:
+        info = resp.json()
+    elif resp.status_code == 404:
+        # Runner restarted — fall back to cold-start Restart path.
+        create_body = {"language": new_lang, "code": new_code, "name": f"u{user['id']}-{new_name}"}
+        if new_repo:
+            create_body["repo_url"] = new_repo
+            if new_entry: create_body["entry"] = new_entry
+        resp2 = runner_client._runner_http("POST", "/internal/jobs", create_body)
+        if resp2.status_code != 201:
+            try:
+                detail = resp2.json().get("detail", "Runner rejected the job.")
+            except Exception:
+                detail = "Runner rejected the job."
+            raise HTTPException(status_code=502, detail=detail)
+        info = resp2.json()
+        conn = get_db_connection()
+        try:
+            conn.execute("UPDATE jobs SET runner_job_id = ?, updated_at = ? WHERE id = ?",
+                         (info["id"], now_utc_str(), job_id))
+            conn.commit()
+        finally:
+            conn.close()
+    else:
+        try:
+            detail = resp.json().get("detail", "Runner rejected the update.")
+        except Exception:
+            detail = "Runner rejected the update."
+        raise HTTPException(status_code=502, detail=detail)
+
+    info["job_db_id"] = job_id
+    info.update(runner_client._job_web_fields(info))
+    return info
+
+
+@router.delete("/api/jobs/{job_id}")
+def delete_job(job_id: int, authorization: Optional[str] = Header(None)):
+    user, _ = get_current_user_and_session(authorization)
+    row = _get_own_job(job_id, user)
+    rid = row.get("runner_job_id")
+    if rid:
+        # Hard delete on the runner too — wipes the persistent workspace.
+        try:
+            runner_client._runner_http("DELETE", f"/internal/jobs/{rid}")
+        except HTTPException:
+            pass
+    conn = get_db_connection()
+    try:
+        conn.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
+        conn.commit()
+    finally:
+        conn.close()
+    return {"message": "Job deleted."}
 
 
 @router.post("/api/jobs/{job_id}/access")
@@ -330,25 +602,143 @@ def toggle_job_access(job_id: int, payload: JobAccessToggle, authorization: Opti
     return info
 
 
-@router.delete("/api/jobs/{job_id}")
-def delete_job(job_id: int, authorization: Optional[str] = Header(None)):
-    user, _ = get_current_user_and_session(authorization)
-    row = _get_own_job(job_id, user)
-    rid = row.get("runner_job_id")
-    if rid:
-        try:
-            runner_client._runner_http("POST", f"/internal/jobs/{rid}/stop")
-        except HTTPException:
-            pass  # best effort
-    conn = get_db_connection()
-    try:
-        conn.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
-        conn.commit()
-    finally:
-        conn.close()
-    return {"message": "Job deleted."}
+
 
 
 # ================================
 # USER PREFERENCES
 # ================================
+
+# ================================
+# GITHUB IMPORT — fetch a single file or repo tree into editor
+# ================================
+
+_GH_RAW_HOSTS = ("raw.githubusercontent.com",)
+_GH_WEB_RE = re.compile(
+    r"^https?://github\.com/(?P<owner>[^/]+)/(?P<repo>[^/]+)"
+    r"(?:/(?:blob|tree)/(?P<ref>[^/]+)/(?P<path>.+))?/?$"
+)
+
+_LANG_GUESS = {
+    ".py": "python", ".js": "javascript", ".mjs": "javascript",
+    ".ts": "javascript", ".sh": "bash", ".bash": "bash",
+    ".zsh": "bash", ".rb": "ruby", ".php": "php",
+    ".html": "htmlmixed", ".htm": "htmlmixed",
+    ".css": "css", ".md": "markdown",
+}
+
+
+def _http_get_text(url: str, timeout: float = 12.0) -> tuple[int, str]:
+    """Small blocking GET using stdlib — only called for raw.github content."""
+    import urllib.request, urllib.error, ssl
+    req = urllib.request.Request(url, headers={
+        "User-Agent": "codenest-runspace/1.0",
+        "Accept": "text/plain,application/vnd.github.raw+json,*/*",
+    })
+    ctx = ssl.create_default_context()
+    try:
+        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as r:
+            return r.status, r.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as e:
+        try: body = e.read().decode("utf-8", errors="replace")
+        except Exception: body = ""
+        return e.code, body
+    except Exception as e:
+        return 0, str(e)
+
+
+@router.post("/api/import/github")
+def import_github(payload: GithubImportRequest, authorization: Optional[str] = Header(None)):
+    """Fetch raw code from a GitHub URL (file or repo default-branch main file).
+    Returns { name, language, code, source_url } for prefilling the editor.
+    """
+    user, _ = get_current_user_and_session(authorization)
+    url = (payload.url or "").strip()
+    if not url:
+        raise HTTPException(422, "Paste a GitHub URL first.")
+    u = urlparse(url)
+    if u.scheme not in ("http", "https"):
+        raise HTTPException(422, "URL must start with https://")
+    host = (u.hostname or "").lower()
+
+    code = ""
+    name = ""
+    language = "python"
+    source_url = url
+
+    # Case 1: already a raw.githubusercontent.com/<owner>/<repo>/<ref>/<path>
+    if host in _GH_RAW_HOSTS:
+        parts = [p for p in u.path.split("/") if p]
+        if len(parts) >= 4:
+            owner, repo, ref = parts[0], parts[1], parts[2]
+            path = "/".join(parts[3:])
+            status, body = _http_get_text(url)
+            if status != 200:
+                raise HTTPException(400, f"GitHub fetch failed ({status}). Is the repo/file public?")
+            code = body
+            fname = parts[-1]
+            name = repo
+            ext = "." + fname.rsplit(".", 1)[-1].lower() if "." in fname else ""
+            language = _LANG_GUESS.get(ext, "python")
+        else:
+            raise HTTPException(422, "Raw URL path looks off — give a full file link.")
+
+    # Case 2: github.com web URL
+    elif host == "github.com":
+        m = _GH_WEB_RE.match(url.split("#")[0].split("?")[0])
+        if not m:
+            raise HTTPException(422, "That doesn't look like a GitHub file or repo URL.")
+        owner = m.group("owner")
+        repo  = m.group("repo")
+        ref   = m.group("ref")
+        path  = m.group("path")
+        name = repo
+
+        if not path:
+            # Repo root — try to fetch README.md / main.py / app.py / index.js
+            if not ref:
+                # Detect default branch via GitHub API (best-effort)
+                st, body = _http_get_text(f"https://api.github.com/repos/{owner}/{repo}", timeout=8)
+                if st == 200:
+                    try:
+                        meta = json.loads(body)
+                        ref = meta.get("default_branch") or "main"
+                    except Exception:
+                        ref = "main"
+                else:
+                    ref = "main"
+            candidates = ["main.py", "app.py", "bot.py", "index.js", "server.js",
+                          "index.php", "main.sh", "README.md"]
+            fetched = None
+            for cand in candidates:
+                raw = f"https://raw.githubusercontent.com/{owner}/{repo}/{ref}/{cand}"
+                st, body = _http_get_text(raw, timeout=8)
+                if st == 200 and body.strip():
+                    fetched = (cand, body, raw); break
+            if not fetched:
+                raise HTTPException(400, "No main.py/app.py/bot.py/index.js found in repo root. Link directly to a file instead.")
+            fname, code, source_url = fetched
+            ext = "." + fname.rsplit(".",1)[-1].lower()
+            language = _LANG_GUESS.get(ext, "python")
+        else:
+            # Direct file URL like /owner/repo/blob/HEAD/main.py
+            if not ref: ref = "main"
+            raw = f"https://raw.githubusercontent.com/{owner}/{repo}/{ref}/{path}"
+            st, body = _http_get_text(raw)
+            if st != 200:
+                raise HTTPException(400, f"Couldn't fetch file ({st}) — is the file public?")
+            code = body
+            source_url = raw
+            fname = path.rsplit("/",1)[-1]
+            ext = "." + fname.rsplit(".",1)[-1].lower() if "." in fname else ""
+            language = _LANG_GUESS.get(ext, "python")
+    else:
+        raise HTTPException(422, "Only github.com URLs are supported for now.")
+
+    # Cap at ~256KB to prevent dumping huge repos into the editor
+    if len(code) > 256 * 1024:
+        raise HTTPException(400, "File is too large (>256KB). Paste smaller files only.")
+
+    # Slugify name slightly
+    name = re.sub(r"[^A-Za-z0-9_.-]+", "-", name).strip("-") or "github-import"
+    return {"name": name[:60], "language": language, "code": code, "source_url": source_url}
