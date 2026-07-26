@@ -1,13 +1,13 @@
 """
 Telegram Bot - @mytestrenderbot
-Only main command: /code
-All other features via Inline Buttons after deploy
+Only /code + Inline Buttons (Fixed)
 """
 import os
 import re
 import threading
 import time
 import requests
+import json
 from collections import defaultdict
 
 BOT_TOKEN = os.getenv("TELEGRAM_PING_BOT_TOKEN", "").strip()
@@ -19,7 +19,6 @@ TG_API = f"https://api.telegram.org/bot{BOT_TOKEN}" if BOT_TOKEN else ""
 code_buffer = defaultdict(list)
 buffer_timer = {}
 last_job = {}
-user_job_map = defaultdict(dict)
 
 
 def _tg(method, **params):
@@ -35,7 +34,7 @@ def _tg(method, **params):
 def _send(chat_id, text, reply_markup=None):
     data = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}
     if reply_markup:
-        data["reply_markup"] = reply_markup
+        data["reply_markup"] = json.dumps(reply_markup)
     _tg("sendMessage", **data)
 
 
@@ -59,15 +58,15 @@ def collect_code(chat_id, text, first_name):
     buffer_timer[chat_id] = timer
 
 
-# ==================== DEPLOY ====================
+# ==================== DEPLOY + BUTTONS ====================
 def detect_libs(code):
     imports = re.findall(r'^\s*(?:import|from)\s+([a-zA-Z0-9_]+)', code, re.MULTILINE)
     common = {"requests": "requests", "flask": "flask", "fastapi": "fastapi",
-              "pandas": "pandas", "openai": "openai", "telebot": "pyTelegramBotAPI"}
+              "pandas": "pandas", "openai": "openai"}
     return [common.get(i.lower()) for i in imports if i.lower() in common]
 
 
-def get_main_buttons(runner_id, url, job_name):
+def get_buttons(runner_id, url):
     return {
         "inline_keyboard": [
             [
@@ -119,24 +118,24 @@ def deploy_code(code, chat_id, first_name):
         job = resp.json()
         runner_id = job.get("id")
         url = job.get("web_url") or f"{SITE_BASE}/live/{job_name}"
-        
         last_job[chat_id] = runner_id
-        user_job_map[chat_id][job_name] = runner_id
 
-        _send(chat_id, f"🚀 *Deployed!*\n\nLive URL: {url}", 
-              reply_markup=get_main_buttons(runner_id, url, job_name))
+        # Send message WITH buttons
+        success_msg = f"🚀 *Deployed Successfully!*\n\nLive URL: {url}"
+        buttons = get_buttons(runner_id, url)
+        _send(chat_id, success_msg, reply_markup=buttons)
 
     except Exception as e:
         _send(chat_id, f"Error: {str(e)}")
 
 
-# ==================== CALLBACK HANDLER ====================
+# ==================== CALLBACK ====================
 def handle_callback(chat_id, data):
     try:
         action, runner_id = data.split(":")
     except:
         if data == "myjobs":
-            show_my_jobs(chat_id)
+            _send(chat_id, "Use the inline buttons after deploying with /code.")
             return
         return
 
@@ -176,22 +175,11 @@ def handle_callback(chat_id, data):
         _send(chat_id, "📥 DB download coming soon...")
 
 
-def show_my_jobs(chat_id):
-    if chat_id not in user_job_map or not user_job_map[chat_id]:
-        _send(chat_id, "You have no active jobs.")
-        return
-    
-    text = "*Your Jobs:*\n\n"
-    for name in list(user_job_map[chat_id].keys())[-5:]:
-        text += f"• `{name}`\n"
-    _send(chat_id, text)
-
-
-# ==================== MAIN LOOP ====================
+# ==================== MAIN ====================
 def poll_loop():
     if not BOT_TOKEN:
         return
-    print("🤖 Bot starting (Inline Button focused)...")
+    print("🤖 Bot starting...")
     offset = 0
 
     while True:
@@ -212,11 +200,11 @@ def poll_loop():
 
                     if text.startswith("/start"):
                         _send(chat_id, f"👋 Hi {first_name}!\n\n"
-                              "Just send `/code` then paste your code.\n"
-                              "All controls will be available via buttons after deploy.")
+                              "Send `/code` then paste your code.\n"
+                              "All controls will appear as buttons after deploy.")
 
                     elif text.startswith("/code"):
-                        _send(chat_id, "✅ Send your code now (large code supported)")
+                        _send(chat_id, "✅ Send your code now")
 
                     else:
                         collect_code(chat_id, text, first_name)
@@ -237,7 +225,7 @@ def start_bot():
         return
     t = threading.Thread(target=poll_loop, daemon=True)
     t.start()
-    print("✅ Bot started (Inline Button focused)")
+    print("✅ Bot started (Inline buttons fixed)")
 
 
 if __name__ == "__main__":
