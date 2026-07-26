@@ -1,9 +1,7 @@
 """
-Telegram Bot - Advanced RunSpace Controller (Pure requests)
-Features:
-- /code → Smart code collection (5 sec buffer)
-- Inline buttons after deploy
-- Real logs, Uptime, Download DB
+Telegram Bot - @mytestrenderbot
+Main command: /code
+Additional commands: /help, /jobs, /stop, /restart
 """
 import os
 import re
@@ -18,9 +16,11 @@ SITE_BASE = os.getenv("SITE_BASE_URL", "https://ahadorg.onrender.com").rstrip("/
 
 TG_API = f"https://api.telegram.org/bot{BOT_TOKEN}" if BOT_TOKEN else ""
 
-# Code collection buffer
-code_buffer = defaultdict(list)       # chat_id -> list of messages
-buffer_timer = {}                     # chat_id -> timer
+# Buffers
+code_buffer = defaultdict(list)
+buffer_timer = {}
+last_job = {}                    # chat_id -> runner_id
+user_job_map = defaultdict(dict) # chat_id -> {job_name: runner_id}
 
 
 def _tg(method, **params):
@@ -40,19 +40,7 @@ def _send(chat_id, text, reply_markup=None):
     _tg("sendMessage", **data)
 
 
-# ==================== /ping ====================
-def handle_ping(chat_id, text):
-    target = text.split()[1] if len(text.split()) > 1 else "https://ahadorg.onrender.com"
-    try:
-        t0 = time.time()
-        r = requests.head(target, timeout=8, allow_redirects=True)
-        ms = round((time.time() - t0) * 1000, 1)
-        _send(chat_id, f"🟢 {ms}ms | HTTP {r.status_code}")
-    except Exception as e:
-        _send(chat_id, f"❌ {str(e)}")
-
-
-# ==================== SMART CODE COLLECTION ====================
+# ==================== 5 SECOND CODE BUFFER ====================
 def flush_code(chat_id, first_name):
     if chat_id not in code_buffer:
         return
@@ -65,17 +53,14 @@ def flush_code(chat_id, first_name):
 
 def collect_code(chat_id, text, first_name):
     code_buffer[chat_id].append(text)
-
-    # Reset timer
     if chat_id in buffer_timer:
         buffer_timer[chat_id].cancel()
-
     timer = threading.Timer(5.0, flush_code, args=[chat_id, first_name])
     timer.start()
     buffer_timer[chat_id] = timer
 
 
-# ==================== DEPLOY + INLINE BUTTONS ====================
+# ==================== DEPLOY ====================
 def detect_libs(code):
     imports = re.findall(r'^\s*(?:import|from)\s+([a-zA-Z0-9_]+)', code, re.MULTILINE)
     common = {"requests": "requests", "flask": "flask", "fastapi": "fastapi",
@@ -83,7 +68,7 @@ def detect_libs(code):
     return [common.get(i.lower()) for i in imports if i.lower() in common]
 
 
-def get_job_buttons(runner_id, url):
+def get_buttons(runner_id, url, job_name=""):
     return {
         "inline_keyboard": [
             [
@@ -91,10 +76,10 @@ def get_job_buttons(runner_id, url):
                 {"text": "⏱ Uptime", "callback_data": f"uptime:{runner_id}"}
             ],
             [
-                {"text": "📥 Download DB", "callback_data": f"db:{runner_id}"},
+                {"text": "📥 DB", "callback_data": f"db:{runner_id}"},
                 {"text": "🔄 Restart", "callback_data": f"restart:{runner_id}"}
             ],
-            [{"text": "🌐 Open Live URL", "url": url}]
+            [{"text": "🌐 Open", "url": url}]
         ]
     }
 
@@ -122,8 +107,8 @@ def deploy_code(code, chat_id, first_name):
 
     try:
         from services.runner_client import _runner_http
-
         resp = _runner_http("POST", "/internal/jobs", payload)
+        
         if resp.status_code != 201:
             _send(chat_id, f"❌ {resp.json().get('detail', 'Failed')}")
             return
@@ -131,15 +116,81 @@ def deploy_code(code, chat_id, first_name):
         job = resp.json()
         runner_id = job.get("id")
         url = job.get("web_url") or f"{SITE_BASE}/live/{job_name}"
+        
+        last_job[chat_id] = runner_id
+        user_job_map[chat_id][job_name] = runner_id
 
         _send(chat_id, f"🚀 *Deployed!*\n\nLive URL: {url}", 
-              reply_markup=get_job_buttons(runner_id, url))
+              reply_markup=get_buttons(runner_id, url, job_name))
 
     except Exception as e:
         _send(chat_id, f"Error: {str(e)}")
 
 
-# ==================== CALLBACK HANDLER ====================
+# ==================== /help ====================
+def show_help(chat_id):
+    text = """*Available Commands:*
+
+/code - Deploy code (send after this command)
+/jobs - List your running jobs
+/stop - Stop last job
+/restart - Restart last job
+/help - Show this message
+
+*After deploying with /code*, use the inline buttons for:
+• 📜 Logs
+• ⏱ Uptime  
+• 📥 Download DB
+• 🔄 Restart"""
+    _send(chat_id, text)
+
+
+# ==================== /jobs ====================
+def show_jobs(chat_id):
+    if chat_id not in user_job_map or not user_job_map[chat_id]:
+        _send(chat_id, "You have no active jobs.\nUse /code to deploy.")
+        return
+    
+    jobs = user_job_map[chat_id]
+    text = "*Your Jobs:*\n\n"
+    for name, rid in list(jobs.items())[-5:]:  # Show last 5
+        text += f"• `{name}`\n"
+    
+    text += "\nUse inline buttons after /code for more actions."
+    _send(chat_id, text)
+
+
+# ==================== /stop ====================
+def stop_last_job(chat_id):
+    if chat_id not in last_job:
+        _send(chat_id, "No active job found. Use /code first.")
+        return
+    
+    runner_id = last_job[chat_id]
+    try:
+        from services.runner_client import _runner_http
+        _runner_http("POST", f"/internal/jobs/{runner_id}/stop")
+        _send(chat_id, "🛑 Job stopped.")
+    except:
+        _send(chat_id, "❌ Failed to stop job.")
+
+
+# ==================== /restart ====================
+def restart_last_job(chat_id):
+    if chat_id not in last_job:
+        _send(chat_id, "No active job found. Use /code first.")
+        return
+    
+    runner_id = last_job[chat_id]
+    try:
+        from services.runner_client import _runner_http
+        _runner_http("POST", f"/internal/jobs/{runner_id}/restart")
+        _send(chat_id, "🔄 Restart requested!")
+    except:
+        _send(chat_id, "❌ Restart failed.")
+
+
+# ==================== CALLBACK ====================
 def handle_callback(chat_id, data):
     try:
         action, runner_id = data.split(":")
@@ -151,8 +202,8 @@ def handle_callback(chat_id, data):
     if action == "logs":
         try:
             r = _runner_http("GET", f"/internal/jobs/{runner_id}")
-            logs = r.json().get("logs", "No logs yet")[-500:]
-            _send(chat_id, f"📜 *Latest Logs:*\n```\n{logs}\n```")
+            logs = r.json().get("logs", "No logs")[-650:]
+            _send(chat_id, f"```\n{logs}\n```")
         except:
             _send(chat_id, "❌ Could not fetch logs")
 
@@ -160,14 +211,9 @@ def handle_callback(chat_id, data):
         try:
             r = _runner_http("GET", f"/internal/jobs/{runner_id}")
             data = r.json()
-            uptime = data.get("uptime_s", 0)
-            status = data.get("status", "unknown")
-            _send(chat_id, f"⏱ *Uptime:* {uptime}s\nStatus: `{status}`")
+            _send(chat_id, f"⏱ Uptime: {data.get('uptime_s', 0)}s\nStatus: `{data.get('status')}`")
         except:
-            _send(chat_id, "❌ Could not get status")
-
-    elif action == "db":
-        _send(chat_id, "📥 Database download feature coming soon...")
+            _send(chat_id, "❌ Error")
 
     elif action == "restart":
         try:
@@ -176,12 +222,15 @@ def handle_callback(chat_id, data):
         except:
             _send(chat_id, "❌ Restart failed")
 
+    elif action == "db":
+        _send(chat_id, "📥 DB download coming soon...")
+
 
 # ==================== MAIN LOOP ====================
 def poll_loop():
     if not BOT_TOKEN:
         return
-    print("🤖 Advanced Bot starting...")
+    print("🤖 Bot starting...")
     offset = 0
 
     while True:
@@ -201,17 +250,27 @@ def poll_loop():
                     first_name = msg.get("from", {}).get("first_name", "user")
 
                     if text.startswith("/start"):
-                        _send(chat_id, f"👋 Hi {first_name}!\\n\\nUse /ping or /code")
+                        _send(chat_id, f"👋 Hi {first_name}!\n\n"
+                              "Send /code then paste your code.\n"
+                              "Use /help for all commands.")
 
-                    elif text.startswith("/ping"):
-                        handle_ping(chat_id, text)
+                    elif text.startswith("/help"):
+                        show_help(chat_id)
 
                     elif text.startswith("/code"):
-                        waiting_for_code[chat_id] = True
-                        _send(chat_id, "✅ Send your code (any size)")
+                        _send(chat_id, "✅ Send your code now (large code supported)")
 
-                    elif chat_id in waiting_for_code:
-                        del waiting_for_code[chat_id]
+                    elif text.startswith("/jobs"):
+                        show_jobs(chat_id)
+
+                    elif text.startswith("/stop"):
+                        stop_last_job(chat_id)
+
+                    elif text.startswith("/restart"):
+                        restart_last_job(chat_id)
+
+                    else:
+                        # Treat any other message as code after /code
                         collect_code(chat_id, text, first_name)
 
                 elif "callback_query" in upd:
@@ -230,4 +289,8 @@ def start_bot():
         return
     t = threading.Thread(target=poll_loop, daemon=True)
     t.start()
-    print("✅ Advanced Bot started (with 5s buffer + inline controls)")
+    print("✅ Bot started (with /code, /jobs, /stop, /restart + inline buttons)")
+
+
+if __name__ == "__main__":
+    start_bot()
