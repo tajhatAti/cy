@@ -1,7 +1,7 @@
 """
 Telegram Bot - @mytestrenderbot
-Main command: /code
-Additional commands: /help, /jobs, /stop, /restart
+Only main command: /code
+All other features via Inline Buttons after deploy
 """
 import os
 import re
@@ -16,11 +16,10 @@ SITE_BASE = os.getenv("SITE_BASE_URL", "https://ahadorg.onrender.com").rstrip("/
 
 TG_API = f"https://api.telegram.org/bot{BOT_TOKEN}" if BOT_TOKEN else ""
 
-# Buffers
 code_buffer = defaultdict(list)
 buffer_timer = {}
-last_job = {}                    # chat_id -> runner_id
-user_job_map = defaultdict(dict) # chat_id -> {job_name: runner_id}
+last_job = {}
+user_job_map = defaultdict(dict)
 
 
 def _tg(method, **params):
@@ -40,7 +39,7 @@ def _send(chat_id, text, reply_markup=None):
     _tg("sendMessage", **data)
 
 
-# ==================== 5 SECOND CODE BUFFER ====================
+# ==================== 5 SECOND BUFFER ====================
 def flush_code(chat_id, first_name):
     if chat_id not in code_buffer:
         return
@@ -68,7 +67,7 @@ def detect_libs(code):
     return [common.get(i.lower()) for i in imports if i.lower() in common]
 
 
-def get_buttons(runner_id, url, job_name=""):
+def get_main_buttons(runner_id, url, job_name):
     return {
         "inline_keyboard": [
             [
@@ -76,10 +75,14 @@ def get_buttons(runner_id, url, job_name=""):
                 {"text": "⏱ Uptime", "callback_data": f"uptime:{runner_id}"}
             ],
             [
-                {"text": "📥 DB", "callback_data": f"db:{runner_id}"},
-                {"text": "🔄 Restart", "callback_data": f"restart:{runner_id}"}
+                {"text": "🔄 Restart", "callback_data": f"restart:{runner_id}"},
+                {"text": "🛑 Stop", "callback_data": f"stop:{runner_id}"}
             ],
-            [{"text": "🌐 Open", "url": url}]
+            [
+                {"text": "📥 DB", "callback_data": f"db:{runner_id}"},
+                {"text": "📋 My Jobs", "callback_data": "myjobs"}
+            ],
+            [{"text": "🌐 Open Live URL", "url": url}]
         ]
     }
 
@@ -121,80 +124,20 @@ def deploy_code(code, chat_id, first_name):
         user_job_map[chat_id][job_name] = runner_id
 
         _send(chat_id, f"🚀 *Deployed!*\n\nLive URL: {url}", 
-              reply_markup=get_buttons(runner_id, url, job_name))
+              reply_markup=get_main_buttons(runner_id, url, job_name))
 
     except Exception as e:
         _send(chat_id, f"Error: {str(e)}")
 
 
-# ==================== /help ====================
-def show_help(chat_id):
-    text = """*Available Commands:*
-
-/code - Deploy code (send after this command)
-/jobs - List your running jobs
-/stop - Stop last job
-/restart - Restart last job
-/help - Show this message
-
-*After deploying with /code*, use the inline buttons for:
-• 📜 Logs
-• ⏱ Uptime  
-• 📥 Download DB
-• 🔄 Restart"""
-    _send(chat_id, text)
-
-
-# ==================== /jobs ====================
-def show_jobs(chat_id):
-    if chat_id not in user_job_map or not user_job_map[chat_id]:
-        _send(chat_id, "You have no active jobs.\nUse /code to deploy.")
-        return
-    
-    jobs = user_job_map[chat_id]
-    text = "*Your Jobs:*\n\n"
-    for name, rid in list(jobs.items())[-5:]:  # Show last 5
-        text += f"• `{name}`\n"
-    
-    text += "\nUse inline buttons after /code for more actions."
-    _send(chat_id, text)
-
-
-# ==================== /stop ====================
-def stop_last_job(chat_id):
-    if chat_id not in last_job:
-        _send(chat_id, "No active job found. Use /code first.")
-        return
-    
-    runner_id = last_job[chat_id]
-    try:
-        from services.runner_client import _runner_http
-        _runner_http("POST", f"/internal/jobs/{runner_id}/stop")
-        _send(chat_id, "🛑 Job stopped.")
-    except:
-        _send(chat_id, "❌ Failed to stop job.")
-
-
-# ==================== /restart ====================
-def restart_last_job(chat_id):
-    if chat_id not in last_job:
-        _send(chat_id, "No active job found. Use /code first.")
-        return
-    
-    runner_id = last_job[chat_id]
-    try:
-        from services.runner_client import _runner_http
-        _runner_http("POST", f"/internal/jobs/{runner_id}/restart")
-        _send(chat_id, "🔄 Restart requested!")
-    except:
-        _send(chat_id, "❌ Restart failed.")
-
-
-# ==================== CALLBACK ====================
+# ==================== CALLBACK HANDLER ====================
 def handle_callback(chat_id, data):
     try:
         action, runner_id = data.split(":")
     except:
+        if data == "myjobs":
+            show_my_jobs(chat_id)
+            return
         return
 
     from services.runner_client import _runner_http
@@ -222,15 +165,33 @@ def handle_callback(chat_id, data):
         except:
             _send(chat_id, "❌ Restart failed")
 
+    elif action == "stop":
+        try:
+            _runner_http("POST", f"/internal/jobs/{runner_id}/stop")
+            _send(chat_id, "🛑 Job stopped.")
+        except:
+            _send(chat_id, "❌ Stop failed")
+
     elif action == "db":
         _send(chat_id, "📥 DB download coming soon...")
+
+
+def show_my_jobs(chat_id):
+    if chat_id not in user_job_map or not user_job_map[chat_id]:
+        _send(chat_id, "You have no active jobs.")
+        return
+    
+    text = "*Your Jobs:*\n\n"
+    for name in list(user_job_map[chat_id].keys())[-5:]:
+        text += f"• `{name}`\n"
+    _send(chat_id, text)
 
 
 # ==================== MAIN LOOP ====================
 def poll_loop():
     if not BOT_TOKEN:
         return
-    print("🤖 Bot starting...")
+    print("🤖 Bot starting (Inline Button focused)...")
     offset = 0
 
     while True:
@@ -251,26 +212,13 @@ def poll_loop():
 
                     if text.startswith("/start"):
                         _send(chat_id, f"👋 Hi {first_name}!\n\n"
-                              "Send /code then paste your code.\n"
-                              "Use /help for all commands.")
-
-                    elif text.startswith("/help"):
-                        show_help(chat_id)
+                              "Just send `/code` then paste your code.\n"
+                              "All controls will be available via buttons after deploy.")
 
                     elif text.startswith("/code"):
                         _send(chat_id, "✅ Send your code now (large code supported)")
 
-                    elif text.startswith("/jobs"):
-                        show_jobs(chat_id)
-
-                    elif text.startswith("/stop"):
-                        stop_last_job(chat_id)
-
-                    elif text.startswith("/restart"):
-                        restart_last_job(chat_id)
-
                     else:
-                        # Treat any other message as code after /code
                         collect_code(chat_id, text, first_name)
 
                 elif "callback_query" in upd:
@@ -289,7 +237,7 @@ def start_bot():
         return
     t = threading.Thread(target=poll_loop, daemon=True)
     t.start()
-    print("✅ Bot started (with /code, /jobs, /stop, /restart + inline buttons)")
+    print("✅ Bot started (Inline Button focused)")
 
 
 if __name__ == "__main__":
